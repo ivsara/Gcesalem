@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Notice board frame -->
+    <path
+        android:fillColor="#FFD54F"
+        android:pathData="M 32,30 H 76 C 78.2,30 80,31.8 80,34 V 76 C 80,78.2 78.2,80 76,80 H 32 C 29.8,80 28,78.2 28,76 V 34 C 28,31.8 29.8,30 32,30 Z" />
+    <!-- Notice board inner slate -->
+    <path
+        android:fillColor="#0E3854"
+        android:pathData="M 33,35 H 75 V 75 H 33 Z" />
+    <!-- Pin at top center -->
+    <path
+        android:fillColor="#FF5252"
+        android:pathData="M 52,26 H 56 V 32 H 52 Z M 54,32 L 54,36"
+        android:strokeColor="#FF5252"
+        android:strokeWidth="1.5" />
+    <!-- Notice Paper 1 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M 37,40 H 51 V 56 H 37 Z" />
+    <!-- Notice Paper 1 content lines -->
+    <path
+        android:fillColor="#1565C0"
+        android:pathData="M 39,43 H 49 V 45 H 39 Z M 39,47 H 47 V 48.5 H 39 Z M 39,50.5 H 48 V 52 H 39 Z" />
+    <!-- Notice Paper 2 (Announcements / Megaphone badge) -->
+    <path
+        android:fillColor="#FFF9C4"
+        android:pathData="M 55,42 H 71 V 70 H 55 Z" />
+    <path
+        android:fillColor="#D32F2F"
+        android:pathData="M 58,46 H 68 V 48 H 58 Z M 58,51 H 66 V 52.5 H 58 Z M 58,55 H 67 V 56.5 H 58 Z M 58,59 H 64 V 60.5 H 58 Z" />
+    <!-- Small star / urgent badge -->
+    <path
+        android:fillColor="#FFA000"
+        android:pathData="M 44,61 L 45.2,64.5 L 48.8,64.5 L 45.9,66.6 L 47,70 L 44,67.8 L 41,70 L 42.1,66.6 L 39.2,64.5 L 42.8,64.5 Z" />
+</vector>

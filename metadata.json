@@ -1,0 +1,6 @@
+{
+  "name": "GCE Notice Board",
+  "description": "Digital Notice Board System for Government College of Engineering, Salem with department circulars, role-based access, and real-time updates.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
