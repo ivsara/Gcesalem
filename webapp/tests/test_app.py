@@ -24,26 +24,43 @@ def test_home_and_health():
     assert 'Digital Notice Board' in r.text
     assert 'Welcome to the GCE Salem Digital Notice Board' in r.text
 
-def test_login_and_api_token():
-    r = client.post('/api/auth/login', json={'login_id':'admin','password':'admin123'})
+def test_departments_list():
+    r = client.get('/api/departments')
     assert r.status_code == 200
+    codes = {d['code'] for d in r.json()}
+    assert codes == {'CIVIL', 'MECH', 'ECE', 'EEE', 'CSE', 'METT', 'AIML'}
+
+def test_login_and_api_token():
+    r = client.post('/api/auth/login', json={'login_id':'principal','password':'principal123'})
+    assert r.status_code == 200
+    assert r.json()['user']['full_name'] == 'Admin Principal'
     token = r.json()['access_token']
     assert client.get('/api/auth/me', headers={'Authorization':f'Bearer {token}'}).status_code == 200
 
+def test_hod_can_publish_to_own_department():
+    r = client.post('/api/auth/login', json={'login_id':'hod_aiml','password':'hod123'})
+    assert r.status_code == 200
+    assert r.json()['user']['role'] == 'HOD'
+    assert r.json()['user']['full_name'] == 'HOD - AIML'
+    token = r.json()['access_token']
+    res = client.post('/api/notices', headers={'Authorization':f'Bearer {token}'}, json={'title':'AIML Dept Circular','description':'HOD announcement','department':'AIML','category':'Circular','priority':'HIGH'})
+    assert res.status_code == 200
+    assert res.json()['department'] == 'AIML'
+
 def test_student_cannot_publish():
-    r = client.post('/api/auth/login', json={'login_id':'student_cse','password':'student123'})
+    r = client.post('/api/auth/login', json={'login_id':'student_cse1','password':'student123'})
     token = r.json()['access_token']
     r = client.post('/api/notices', headers={'Authorization':f'Bearer {token}'}, json={'title':'Should fail','description':'Student cannot publish','department':'CSE'})
     assert r.status_code == 403
 
 def test_faculty_cannot_publish_to_other_department():
-    r = client.post('/api/auth/login', json={'login_id':'faculty_cse','password':'faculty123'})
+    r = client.post('/api/auth/login', json={'login_id':'faculty_cse1','password':'faculty123'})
     token = r.json()['access_token']
-    r = client.post('/api/notices', headers={'Authorization':f'Bearer {token}'}, json={'title':'Should fail','description':'Wrong department','department':'IT'})
+    r = client.post('/api/notices', headers={'Authorization':f'Bearer {token}'}, json={'title':'Should fail','description':'Wrong department','department':'ECE'})
     assert r.status_code == 403
 
 def test_admin_can_create_notice():
-    r = client.post('/api/auth/login', json={'login_id':'admin','password':'admin123'})
+    r = client.post('/api/auth/login', json={'login_id':'principal','password':'principal123'})
     token = r.json()['access_token']
     r = client.post('/api/notices', headers={'Authorization':f'Bearer {token}'}, json={'title':'Automated test notice','description':'API test','department':'CSE','category':'General','priority':'MEDIUM'})
     assert r.status_code == 200
@@ -54,7 +71,7 @@ def test_upload_requires_login():
     assert r.status_code == 401
 
 def test_real_file_upload_and_download():
-    auth = client.post('/api/auth/login', json={'login_id':'admin','password':'admin123'}).json()
+    auth = client.post('/api/auth/login', json={'login_id':'principal','password':'principal123'}).json()
     headers = {'Authorization': f"Bearer {auth['access_token']}"}
     notice = client.post('/api/notices', headers=headers, json={'title':'Upload test notice','description':'A notice with a real PDF attachment','department':'CSE','category':'Circular','priority':'MEDIUM'}).json()
     uploaded = client.post(f"/api/notices/{notice['id']}/attachments", headers=headers, files=[('files', ('sample.pdf', b'%PDF-1.4\nactual test bytes', 'application/pdf'))])
