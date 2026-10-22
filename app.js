@@ -1034,70 +1034,14 @@
     previewModal.classList.remove('open');
   });
 
-  // Login Modal & Role Credential Helper
+  // Login Modal (Manual Authentication Only)
   const loginModal = document.getElementById('login-modal');
   const loginErrorEl = document.getElementById('login-error');
-  const helperRoleSelect = document.getElementById('helper-role-select');
-  const helperDeptWrap = document.getElementById('helper-dept-wrap');
-  const helperDeptSelect = document.getElementById('helper-dept-select');
-  const helperNumWrap = document.getElementById('helper-num-wrap');
-  const helperNumSelect = document.getElementById('helper-num-select');
-  const btnApplyHelper = document.getElementById('btn-apply-helper');
-
-  function updateHelperFields() {
-    const role = helperRoleSelect.value;
-    if (role === 'principal') {
-      helperDeptWrap.classList.add('hidden');
-      helperNumWrap.classList.add('hidden');
-    } else if (role === 'hod') {
-      helperDeptWrap.classList.remove('hidden');
-      helperNumWrap.classList.add('hidden');
-    } else if (role === 'faculty') {
-      helperDeptWrap.classList.remove('hidden');
-      helperNumWrap.classList.remove('hidden');
-      helperNumSelect.innerHTML = [1, 2, 3]
-        .map(n => `<option value="${n}">Faculty ${n}</option>`)
-        .join('');
-    } else if (role === 'student') {
-      helperDeptWrap.classList.remove('hidden');
-      helperNumWrap.classList.remove('hidden');
-      helperNumSelect.innerHTML = Array.from({ length: 10 }, (_, i) => i + 1)
-        .map(n => `<option value="${n}">Student ${n}</option>`)
-        .join('');
-    }
-  }
-
-  if (helperRoleSelect) {
-    helperRoleSelect.addEventListener('change', updateHelperFields);
-    updateHelperFields();
-  }
-
-  if (btnApplyHelper) {
-    btnApplyHelper.addEventListener('click', () => {
-      const role = helperRoleSelect.value;
-      const dept = helperDeptSelect.value;
-      const num = helperNumSelect.value || '1';
-      const loginInput = document.getElementById('login-id-input');
-      const passInput = document.getElementById('login-pass-input');
-
-      if (role === 'principal') {
-        loginInput.value = 'principal';
-        passInput.value = 'principal123';
-      } else if (role === 'hod') {
-        loginInput.value = `hod_${dept}`;
-        passInput.value = 'hod123';
-      } else if (role === 'faculty') {
-        loginInput.value = `faculty_${dept}${num}`;
-        passInput.value = 'faculty123';
-      } else {
-        loginInput.value = `student_${dept}${num}`;
-        passInput.value = 'student123';
-      }
-    });
-  }
 
   btnOpenLogin.addEventListener('click', () => {
     loginErrorEl.classList.add('hidden');
+    document.getElementById('login-id-input').value = '';
+    document.getElementById('login-pass-input').value = '';
     loginModal.classList.add('open');
   });
   document.getElementById('btn-close-login').addEventListener('click', () => {
