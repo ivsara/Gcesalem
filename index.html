@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#102f50">
+  <title>Digital Notice Board · Government College of Engineering, Salem</title>
+  <link rel="stylesheet" href="./styles.css">
+  <script defer src="./app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#top">
+      <span class="brand-mark">GCE</span>
+      <span>
+        <b>Digital Notice Board</b>
+        <small>Government College of Engineering, Salem (Autonomous)</small>
+      </span>
+    </a>
+    <nav>
+      <a href="#notices">Notices</a>
+      <a href="#publish" id="nav-publish" class="hidden">Publish</a>
+      <a href="#admin-panel" id="nav-admin" class="hidden">Admin Console</a>
+      <a href="#theme-panel">Theme</a>
+      <a href="#viva-docs">Viva &amp; Docs</a>
+      <span id="user-chip-container" class="hidden">
+        <span class="user-chip">
+          <span class="avatar" id="user-avatar">A</span>
+          <span>
+            <span id="user-fullname">College Administrator</span>
+            <small id="user-role-dept">Administrator · ALL</small>
+          </span>
+        </span>
+      </span>
+      <button class="button button-primary" id="btn-open-login" type="button">Sign in</button>
+      <button class="button button-quiet hidden" id="btn-logout" type="button">Sign out</button>
+    </nav>
+  </header>
+
+  <!-- 1-Tap Academic Demonstration Role Switcher -->
+  <div class="demo-bar" id="top">
+    <div class="demo-bar-label">
+      <span class="demo-badge">Interactive Portal</span>
+      <span>Instant Role Switcher (For Project Demo &amp; Evaluation):</span>
+    </div>
+    <div class="role-pills" id="role-switcher-pills">
+      <button type="button" class="role-pill active" data-demo-user="">Public Guest</button>
+      <button type="button" class="role-pill" data-demo-user="admin">Admin (Principal)</button>
+      <button type="button" class="role-pill" data-demo-user="faculty_cse">Faculty (CSE)</button>
+      <button type="button" class="role-pill" data-demo-user="faculty_ece">Faculty (ECE)</button>
+      <button type="button" class="role-pill" data-demo-user="student_cse">Student (CSE)</button>
+      <button type="button" class="role-pill" data-demo-user="student_it">Student (IT)</button>
+    </div>
+  </div>
+
+  <main>
+    <!-- Hero Banner -->
+    <section class="hero">
+      <div class="hero-copy">
+        <div class="eyebrow"><span class="live-dot"></span> OFFICIAL CAMPUS UPDATES · GCE SALEM</div>
+        <h1>One campus.<br><em>Every important update.</em></h1>
+        <p>Access college announcements, autonomous semester examination schedules, placement drives, and department circulars in real time.</p>
+        <div class="hero-actions">
+          <a class="button button-light" href="#notices">Explore notices <span>↓</span></a>
+          <button class="button button-secondary" id="btn-manual-refresh" type="button" style="background:rgba(255,255,255,0.12);color:#fff;border-color:rgba(255,255,255,0.25);">↻ Refresh Now</button>
+          <span class="update-status"><span class="live-dot"></span> <span id="sync-status-text">Live auto-refresh (15s)</span></span>
+        </div>
+      </div>
+      <div class="hero-art" aria-hidden="true">
+        <div class="art-orbit orbit-one"></div>
+        <div class="art-orbit orbit-two"></div>
+        <div class="art-card">
+          <span class="art-icon">▤</span>
+          <span class="art-lines"><i></i><i></i><i></i></span>
+          <span class="art-tag">GCE SALEM BULLETIN</span>
+        </div>
+        <div class="art-bubble bubble-one">✓ Role-Based Security</div>
+        <div class="art-bubble bubble-two">↗ Department Circulars</div>
+      </div>
+      <div class="hero-footer">
+        <span>GOVERNMENT COLLEGE OF ENGINEERING, SALEM — 636 011</span>
+        <span>EST. 1966 <b>·</b> AUTONOMOUS AFFILIATED TO ANNA UNIVERSITY</span>
+      </div>
+    </section>
+
+    <!-- Stats Grid -->
+    <section class="stats-grid">
+      <article class="stat-card">
+        <span class="stat-icon">▤</span>
+        <div>
+          <strong id="stat-total">0</strong>
+          <span>Visible notices</span>
+        </div>
+      </article>
+      <article class="stat-card">
+        <span class="stat-icon green">⌘</span>
+        <div>
+          <strong id="stat-depts">6</strong>
+          <span>Departments</span>
+        </div>
+      </article>
+      <article class="stat-card">
+        <span class="stat-icon orange">⌖</span>
+        <div>
+          <strong id="stat-pinned">0</strong>
+          <span>Pinned circulars</span>
+        </div>
+      </article>
+      <article class="stat-card">
+        <span class="stat-icon violet">↻</span>
+        <div>
+          <strong id="stat-role">Guest</strong>
+          <span>Current access mode</span>
+        </div>
+      </article>
+    </section>
+
+    <!-- Notices Section -->
+    <section id="notices" class="notice-section">
+      <div class="section-heading">
+        <div>
+          <div class="eyebrow dark-eyebrow">CAMPUS BULLETIN BOARD</div>
+          <h2>Latest notices <span class="heading-count" id="heading-count">0</span></h2>
+          <p id="access-subtitle">Showing public college announcements. Sign in to view restricted department circulars.</p>
+        </div>
+        <div style="display:flex;align-items:center;gap:14px;">
+          <label class="check-field hidden" id="expired-toggle-wrap">
+            <input type="checkbox" id="filter-expired">
+            <span>Show expired archive</span>
+          </label>
+          <span class="refresh-label"><span class="live-dot"></span> Last synced: <b id="last-sync-time">Just now</b></span>
+        </div>
+      </div>
+
+      <!-- Quick Department Pills -->
+      <div class="dept-Quick-tabs" id="dept-quick-tabs"></div>
+
+      <!-- Search & Filter Bar -->
+      <div class="filter-panel">
+        <label class="search-field">
+          <span>⌕</span>
+          <input id="filter-q" type="search" placeholder="Search by title, description, exam, placement, author…" aria-label="Search notices">
+        </label>
+        <label class="select-wrap">
+          <span>Department</span>
+          <select id="filter-dept">
+            <option value="ALL">All departments</option>
+          </select>
+        </label>
+        <label class="select-wrap">
+          <span>Category</span>
+          <select id="filter-category">
+            <option value="ALL">All categories</option>
+            <option value="Examination">Examination</option>
+            <option value="Events">Events</option>
+            <option value="Placements">Placements</option>
+            <option value="General">General</option>
+            <option value="Department Circulars">Department Circulars</option>
+            <option value="Important Announcements">Important Announcements</option>
+          </select>
+        </label>
+        <label class="select-wrap">
+          <span>Priority</span>
+          <select id="filter-priority">
+            <option value="ALL">All priorities</option>
+            <option value="HIGH">High — Urgent</option>
+            <option value="MEDIUM">Medium</option>
+            <option value="LOW">Low</option>
+          </select>
+        </label>
+        <button class="button button-quiet" id="btn-clear-filters" type="button">Clear Filters</button>
+      </div>
+
+      <div class="notice-list" id="notice-list"></div>
+    </section>
+
+    <!-- Publish Notice Section (Admin & Faculty Only) -->
+    <section id="publish" class="publish-section hidden">
+      <div class="section-heading">
+        <div>
+          <div class="eyebrow dark-eyebrow">SHARE AN OFFICIAL CIRCULAR</div>
+          <h2 id="form-section-title">Publish a notice</h2>
+          <p>Post an announcement with circular attachments for your department or the entire campus.</p>
+        </div>
+        <span class="role-label" id="publish-role-badge">Faculty / Admin Access</span>
+      </div>
+      <form class="publish-form" id="notice-form">
+        <input type="hidden" id="edit-notice-id" value="">
+        <div class="form-grid">
+          <label class="form-field field-wide">
+            <span>Notice title <b>*</b></span>
+            <input required maxlength="200" id="notice-title" placeholder="e.g. Autonomous End Semester Theory Examination Timetable — Nov/Dec 2026">
+          </label>
+          <label class="form-field field-wide">
+            <span>Notice description <b>*</b></span>
+            <textarea required id="notice-desc" rows="4" placeholder="Enter complete announcement details, venue, eligibility, and instructions…"></textarea>
+          </label>
+          <label class="form-field">
+            <span>Department</span>
+            <select id="notice-dept"></select>
+          </label>
+          <label class="form-field">
+            <span>Category</span>
+            <select id="notice-category">
+              <option value="Examination">Examination</option>
+              <option value="Events">Events</option>
+              <option value="Placements">Placements</option>
+              <option value="General">General</option>
+              <option value="Department Circulars">Department Circulars</option>
+              <option value="Important Announcements">Important Announcements</option>
+            </select>
+          </label>
+          <label class="form-field">
+            <span>Priority</span>
+            <select id="notice-priority">
+              <option value="MEDIUM">Medium — Standard</option>
+              <option value="HIGH">High — Important / Urgent</option>
+              <option value="LOW">Low — Informational</option>
+            </select>
+          </label>
+          <label class="form-field">
+            <span>Expiry date (optional)</span>
+            <input type="date" id="notice-expiry">
+          </label>
+          <label class="form-field">
+            <span>Visibility</span>
+            <select id="notice-visibility">
+              <option value="PUBLIC">Public — Visible on Public Homepage</option>
+              <option value="RESTRICTED">Restricted — Department Login Required</option>
+            </select>
+          </label>
+          <label class="check-field" id="pin-field-wrap" style="padding-top:22px;">
+            <input type="checkbox" id="notice-pinned">
+            <span>Pin this notice to the top of the board</span>
+          </label>
+          <label class="form-field field-wide">
+            <span>Attachments <small>PDF, JPG, PNG, DOC, DOCX, XLS, XLSX · max 10 MB per file</small></span>
+            <input type="file" id="notice-files" multiple accept=".pdf,.jpg,.jpeg,.png,.doc,.docx,.xls,.xlsx">
+          </label>
+        </div>
+        <div class="form-actions">
+          <button class="button button-primary" type="submit" id="btn-submit-notice">Publish notice →</button>
+          <button class="button button-quiet hidden" type="button" id="btn-cancel-edit">Cancel edit</button>
+        </div>
+      </form>
+    </section>
+
+    <!-- Admin Management Section (Administrator Only) -->
+    <section id="admin-panel" class="admin-section hidden">
+      <div class="section-heading">
+        <div>
+          <div class="eyebrow dark-eyebrow">INSTITUTIONAL ADMINISTRATION</div>
+          <h2>User &amp; Department Management</h2>
+          <p>Create faculty/student credentials, manage roles, and configure GCE Salem academic departments.</p>
+        </div>
+        <button class="button button-secondary" id="btn-reset-demo-data" type="button">↺ Reset Demo Database</button>
+      </div>
+      <div class="admin-grid">
+        <!-- Users Management Card -->
+        <div class="admin-card">
+          <h3 style="margin-top:0;">Registered Campus Users</h3>
+          <form id="create-user-form" class="form-grid" style="margin-bottom:16px;">
+            <label class="form-field">
+              <span>Login ID <b>*</b></span>
+              <input required id="new-user-login" placeholder="e.g. faculty_me">
+            </label>
+            <label class="form-field">
+              <span>Password <b>*</b></span>
+              <input required type="password" id="new-user-pass" placeholder="Password">
+            </label>
+            <label class="form-field">
+              <span>Full Name <b>*</b></span>
+              <input required id="new-user-name" placeholder="e.g. Dr. S. Karthikeyan">
+            </label>
+            <label class="form-field">
+              <span>Role</span>
+              <select id="new-user-role">
+                <option value="Student">Student</option>
+                <option value="Faculty">Faculty</option>
+                <option value="Administrator">Administrator</option>
+              </select>
+            </label>
+            <label class="form-field">
+              <span>Department</span>
+              <select id="new-user-dept"></select>
+            </label>
+            <div style="display:flex;align-items:flex-end;">
+              <button class="button button-primary" type="submit" style="width:100%;">+ Add User</button>
+            </div>
+          </form>
+          <div class="table-list" id="admin-user-list"></div>
+        </div>
+
+        <!-- Departments Management Card -->
+        <div class="admin-card">
+          <h3 style="margin-top:0;">Academic Departments</h3>
+          <form id="create-dept-form" class="form-grid" style="margin-bottom:16px;">
+            <label class="form-field">
+              <span>Dept Code <b>*</b></span>
+              <input required id="new-dept-code" placeholder="e.g. AI&DS" maxlength="12">
+            </label>
+            <label class="form-field">
+              <span>Department Name <b>*</b></span>
+              <input required id="new-dept-name" placeholder="Artificial Intelligence & Data Science">
+            </label>
+            <div class="field-wide">
+              <button class="button button-primary" type="submit">+ Add Department</button>
+            </div>
+          </form>
+          <div class="table-list" id="admin-dept-list"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Customizable Dashboard Theme Settings -->
+    <section id="theme-panel" class="settings-section">
+      <details open>
+        <summary><span>⚙</span> Customizable Dashboard Theme &amp; Display Settings <small>Saved per user account</small></summary>
+        <div class="theme-form">
+          <label>
+            Mode
+            <select id="theme-mode">
+              <option value="light">Light Mode</option>
+              <option value="dark">Dark Mode</option>
+            </select>
+          </label>
+          <label>
+            Accent Colour
+            <input type="color" id="theme-accent" value="#155eef">
+          </label>
+          <label>
+            Background
+            <input type="color" id="theme-bg" value="#f5f7fb">
+          </label>
+          <label>
+            Font Family
+            <select id="theme-font">
+              <option value="'DM Sans', system-ui, sans-serif">DM Sans (Default)</option>
+              <option value="Inter, system-ui, sans-serif">Inter</option>
+              <option value="Georgia, serif">Georgia Serif</option>
+              <option value="Verdana, sans-serif">Verdana</option>
+            </select>
+          </label>
+          <label>
+            Font Size
+            <select id="theme-size">
+              <option value="13px">Compact</option>
+              <option value="14px" selected>Standard</option>
+              <option value="16px">Large</option>
+            </select>
+          </label>
+          <label>
+            Card Style
+            <select id="theme-card-style">
+              <option value="elevated">Elevated Shadow</option>
+              <option value="outlined">Outlined Border</option>
+              <option value="compact">Compact List</option>
+            </select>
+          </label>
+          <button class="button button-quiet" id="btn-reset-theme" type="button">Reset to Default</button>
+        </div>
+      </details>
+    </section>
+
+    <!-- Academic Project Architecture & Viva Section -->
+    <section id="viva-docs" class="docs-section">
+      <div class="docs-card">
+        <div class="eyebrow dark-eyebrow">COLLEGE PROJECT DOCUMENTATION</div>
+        <h2 style="margin:6px 0 12px;">System Architecture &amp; Viva Reference</h2>
+        <div class="form-grid">
+          <div class="table-row" style="flex-direction:column;align-items:flex-start;">
+            <b>1. Role-Based Access Control (RBAC)</b>
+            <span>• <b>Administrator</b> (<code>admin</code> / <code>admin123</code>): Full control over users, departments, all notices, pins, and portal defaults.<br>• <b>Faculty</b> (<code>faculty_cse</code> / <code>faculty123</code>): Publish/edit/delete notices and attachments for assigned department.<br>• <b>Student</b> (<code>student_cse</code> / <code>student123</code>): View public + department notices, preview/download attachments, customize theme.</span>
+          </div>
+          <div class="table-row" style="flex-direction:column;align-items:flex-start;">
+            <b>2. Full-Stack &amp; Hybrid Deployment</b>
+            <span>• <b>GitHub Pages Live Mode:</b> Runs directly in the browser on GitHub Pages with persistent local storage, real file attachment previews, and instant role switching.<br>• <b>FastAPI + SQLite Server Mode:</b> Run <code>cd webapp &amp;&amp; uvicorn main:app --reload</code> for Python REST API + SQLAlchemy ORM.<br>• <b>Android App:</b> Native Kotlin + Jetpack Compose + Room SQLite in <code>app/</code>.</span>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Sign In Modal -->
+  <div class="modal-backdrop" id="login-modal">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3>Sign in to GCE Salem Portal</h3>
+        <button class="icon-button" id="btn-close-login" type="button">×</button>
+      </div>
+      <p style="font-size:12px;color:#667085;margin-top:0;">Enter your college Login ID and password, or click a quick demo credential below.</p>
+      <div id="login-error" class="hidden" style="background:#fff1f0;border:1px solid #ffd7d3;color:#b42318;padding:10px;border-radius:8px;font-size:12px;margin-bottom:12px;"></div>
+      <form id="login-form" class="form-grid">
+        <label class="form-field field-wide">
+          <span>Login ID</span>
+          <input required id="login-id-input" placeholder="admin / faculty_cse / student_cse">
+        </label>
+        <label class="form-field field-wide">
+          <span>Password</span>
+          <input required type="password" id="login-pass-input" placeholder="••••••••">
+        </label>
+        <div class="field-wide">
+          <button class="button button-primary" type="submit" style="width:100%;">Sign In</button>
+        </div>
+      </form>
+      <div style="margin-top:16px;padding-top:12px;border-top:1px solid #eaecf0;font-size:11px;">
+        <b>Demo Credentials (Click to auto-fill):</b>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;">
+          <button type="button" class="role-pill" data-fill-login="admin" data-fill-pass="admin123">Admin (admin / admin123)</button>
+          <button type="button" class="role-pill" data-fill-login="faculty_cse" data-fill-pass="faculty123">Faculty CSE (faculty_cse / faculty123)</button>
+          <button type="button" class="role-pill" data-fill-login="student_cse" data-fill-pass="student123">Student CSE (student_cse / student123)</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Attachment Preview Modal -->
+  <div class="modal-backdrop" id="preview-modal">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3 id="preview-title">Attachment Preview</h3>
+        <button class="icon-button" id="btn-close-preview" type="button">×</button>
+      </div>
+      <div id="preview-body" style="font-size:12.5px;line-height:1.6;"></div>
+      <div style="margin-top:16px;display:flex;justify-content:flex-end;gap:10px;">
+        <a class="button button-primary" id="preview-download-btn" download>↧ Download File</a>
+      </div>
+    </div>
+  </div>
+
+  <footer class="footer">
+    <div class="footer-brand">
+      <span class="brand-mark small-mark">GCE</span>
+      <span><b>GCE Salem</b><small>Digital Notice Board System</small></span>
+    </div>
+    <span>Government College of Engineering, Salem · Department-wise Digital Notice Portal</span>
+    <span>© 2026 GCE Salem</span>
+  </footer>
+</body>
+</html>

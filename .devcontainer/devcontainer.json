@@ -1,0 +1,13 @@
+{
+  "name": "GCE Salem Digital Notice Board",
+  "image": "mcr.microsoft.com/devcontainers/python:3.11",
+  "postCreateCommand": "pip install -r webapp/requirements.txt",
+  "postStartCommand": "cd webapp && uvicorn main:app --host 0.0.0.0 --port 8000 --reload",
+  "forwardPorts": [8000],
+  "portsAttributes": {
+    "8000": {
+      "label": "GCE Salem FastAPI Notice Board",
+      "onAutoForward": "openBrowser"
+    }
+  }
+}
