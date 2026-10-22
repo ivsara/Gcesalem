@@ -20,6 +20,8 @@ import com.example.data.security.SecurityUtils
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 @Database(
     entities = [
@@ -44,6 +46,7 @@ abstract class AppDatabase : RoomDatabase() {
     companion object {
         @Volatile
         private var INSTANCE: AppDatabase? = null
+        private val seedMutex = Mutex()
 
         fun getDatabase(context: Context, scope: CoroutineScope): AppDatabase {
             return INSTANCE ?: synchronized(this) {
@@ -59,17 +62,10 @@ abstract class AppDatabase : RoomDatabase() {
                 instance
             }
         }
-    }
 
-    private class DatabaseCallback(
-        private val scope: CoroutineScope
-    ) : RoomDatabase.Callback() {
-        override fun onCreate(db: SupportSQLiteDatabase) {
-            super.onCreate(db)
-            INSTANCE?.let { database ->
-                scope.launch(Dispatchers.IO) {
-                    populateInitialData(database)
-                }
+        suspend fun ensureSeeded(db: AppDatabase) {
+            seedMutex.withLock {
+                populateInitialData(db)
             }
         }
 
@@ -307,6 +303,19 @@ abstract class AppDatabase : RoomDatabase() {
                 visibility = NoticeVisibility.PUBLIC.name
             )
             db.noticeDao().insertNotice(expiredNotice)
+        }
+    }
+
+    private class DatabaseCallback(
+        private val scope: CoroutineScope
+    ) : RoomDatabase.Callback() {
+        override fun onCreate(db: SupportSQLiteDatabase) {
+            super.onCreate(db)
+            INSTANCE?.let { database ->
+                scope.launch(Dispatchers.IO) {
+                    ensureSeeded(database)
+                }
+            }
         }
     }
 }

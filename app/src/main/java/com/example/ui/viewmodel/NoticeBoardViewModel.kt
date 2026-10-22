@@ -17,6 +17,7 @@ import com.example.data.model.UserPreferenceEntity
 import com.example.data.model.UserRole
 import com.example.data.repository.NoticeBoardRepository
 import com.example.data.security.SecurityUtils
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -30,14 +31,9 @@ import kotlinx.coroutines.launch
 
 class NoticeBoardViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val repository: NoticeBoardRepository
+    private val database: AppDatabase = AppDatabase.getDatabase(application, viewModelScope)
+    private val repository: NoticeBoardRepository = NoticeBoardRepository(database)
     private var pollingJob: Job? = null
-
-    init {
-        val database = AppDatabase.getDatabase(application, viewModelScope)
-        repository = NoticeBoardRepository(database)
-        startPolling()
-    }
 
     // Auth State
     private val _currentUser = MutableStateFlow<UserEntity?>(null)
@@ -174,6 +170,13 @@ class NoticeBoardViewModel(application: Application) : AndroidViewModel(applicat
     )
     val userPreference: StateFlow<UserPreferenceEntity> = _userPreference.asStateFlow()
 
+    init {
+        viewModelScope.launch(Dispatchers.IO) {
+            AppDatabase.ensureSeeded(database)
+        }
+        startPolling()
+    }
+
     // ---------------- AUTHENTICATION ----------------
 
     fun login(loginId: String, passwordPlain: String, onResult: (Boolean) -> Unit) {
@@ -235,8 +238,8 @@ class NoticeBoardViewModel(application: Application) : AndroidViewModel(applicat
         pollingJob?.cancel()
         pollingJob = viewModelScope.launch {
             while (isActive) {
-                val interval = (collegeSettings.value?.refreshIntervalSeconds ?: 10) * 1000L
-                delay(interval)
+                val intervalSec = (collegeSettings.value?.refreshIntervalSeconds ?: 10).coerceIn(5, 60)
+                delay(intervalSec * 1000L)
                 if (_isPollingActive.value) {
                     _lastRefreshedAt.value = System.currentTimeMillis()
                 }
