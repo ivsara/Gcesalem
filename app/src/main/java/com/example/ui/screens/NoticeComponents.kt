@@ -2,9 +2,13 @@ package com.example.ui.screens
 
 import android.content.ContentValues
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.os.ParcelFileDescriptor
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.widget.Toast
@@ -13,6 +17,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -86,6 +91,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -319,6 +326,7 @@ fun NoticeCard(
     modifier: Modifier = Modifier
 ) {
     val attachments by viewModel.getAttachmentsForNotice(notice.id).collectAsState(initial = emptyList())
+    var cardPreviewAttachment by remember { mutableStateOf<AttachmentEntity?>(null) }
     val now = System.currentTimeMillis()
     val isExpired = notice.expiresAt in 1..now
     val canModify = currentUser?.role == UserRole.ADMIN.name ||
@@ -475,28 +483,46 @@ fun NoticeCard(
                         Surface(
                             color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
                             shape = RoundedCornerShape(6.dp),
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)),
-                            modifier = Modifier
-                                .clickable { saveAttachmentToDownloads(cardContext, att) }
-                                .testTag("card_download_att_${att.id}")
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f))
                         ) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                             ) {
-                                Icon(
-                                    imageVector = Icons.Default.Download,
-                                    contentDescription = "Download ${att.originalFilename}",
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(
-                                    text = att.originalFilename.take(24),
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .clickable { cardPreviewAttachment = att }
+                                        .testTag("card_preview_att_${att.id}")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Visibility,
+                                        contentDescription = "Preview ${att.originalFilename}",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = att.originalFilename.take(20),
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .clickable { saveAttachmentToDownloads(cardContext, att) }
+                                        .testTag("card_download_att_${att.id}")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Download,
+                                        contentDescription = "Download ${att.originalFilename}",
+                                        tint = GceBluePrimary,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
                             }
                         }
                     }
@@ -602,6 +628,13 @@ fun NoticeCard(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
             ) { content() }
         }
+    }
+
+    cardPreviewAttachment?.let { att ->
+        AttachmentPreviewDialog(
+            att = att,
+            onDismiss = { cardPreviewAttachment = null }
+        )
     }
 }
 
@@ -794,35 +827,120 @@ fun NoticeDetailDialog(
 
     // Sub-dialog: Attachment Content Previewer
     previewAttachment?.let { att ->
-        AlertDialog(
-            onDismissRequest = { previewAttachment = null },
-            title = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = if (att.fileType == "IMAGE") Icons.Default.Image else Icons.Default.Description,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(text = "Document Preview", fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                }
-            },
-            text = {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    Text(
-                        text = att.originalFilename,
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 14.sp
-                    )
-                    Text(
-                        text = "Format: ${att.fileType} • Size: ${(att.fileSizeBytes / 1024)} KB",
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
+        AttachmentPreviewDialog(
+            att = att,
+            onDismiss = { previewAttachment = null }
+        )
+    }
+}
 
-                    if (att.fileType == "IMAGE") {
-                        // Simulated high-fidelity college graphic banner
+@Composable
+fun AttachmentPreviewDialog(
+    att: AttachmentEntity,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    val localFile = remember(att.storedFilename) {
+        File(File(context.filesDir, "attachments"), att.storedFilename)
+    }
+
+    val imageBitmap: Bitmap? = remember(att.storedFilename, localFile.exists(), localFile.length()) {
+        if (att.fileType == "IMAGE" && localFile.exists() && localFile.length() > 0L) {
+            runCatching { BitmapFactory.decodeFile(localFile.absolutePath) }.getOrNull()
+        } else null
+    }
+
+    val pdfBitmap: Bitmap? = remember(att.storedFilename, localFile.exists(), localFile.length()) {
+        if (att.fileType == "PDF") {
+            runCatching {
+                val targetPdf = if (localFile.exists() && localFile.length() > 10L) {
+                    localFile
+                } else {
+                    val fallbackPdf = File(context.cacheDir, "preview_${att.id}_${att.storedFilename.ifBlank { "doc.pdf" }}")
+                    fallbackPdf.writeBytes(
+                        buildValidPdfBytes(
+                            att.originalFilename.ifBlank { "GCE_Salem_Circular.pdf" },
+                            att.previewSnippet.ifBlank { "Official GCE Salem Circular Document" }
+                        )
+                    )
+                    fallbackPdf
+                }
+                ParcelFileDescriptor.open(targetPdf, ParcelFileDescriptor.MODE_READ_ONLY)?.use { pfd ->
+                    PdfRenderer(pfd).use { renderer ->
+                        if (renderer.pageCount > 0) {
+                            renderer.openPage(0).use { page ->
+                                val bmp = Bitmap.createBitmap(
+                                    page.width.coerceAtLeast(400),
+                                    page.height.coerceAtLeast(560),
+                                    Bitmap.Config.ARGB_8888
+                                )
+                                bmp.eraseColor(android.graphics.Color.WHITE)
+                                page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                                bmp
+                            }
+                        } else null
+                    }
+                }
+            }.getOrNull()
+        } else null
+    }
+
+    val textPreviewContent: String = remember(att.storedFilename, localFile.exists(), localFile.length()) {
+        if (att.fileType != "IMAGE" && att.fileType != "PDF" && localFile.exists() && localFile.length() in 1..65536) {
+            runCatching {
+                val raw = localFile.readText(Charsets.UTF_8)
+                if (raw.none { it == '\u0000' }) raw.take(1500) else att.previewSnippet
+            }.getOrDefault(att.previewSnippet)
+        } else {
+            att.previewSnippet
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = if (att.fileType == "IMAGE") Icons.Default.Image else Icons.Default.Description,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(text = "Attachment Preview", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+            ) {
+                Text(
+                    text = att.originalFilename,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 14.sp
+                )
+                Text(
+                    text = "Format: ${att.fileType} • Size: ${(att.fileSizeBytes / 1024).coerceAtLeast(1)} KB",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+
+                when {
+                    att.fileType == "IMAGE" && imageBitmap != null -> {
+                        Image(
+                            bitmap = imageBitmap.asImageBitmap(),
+                            contentDescription = att.originalFilename,
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(240.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Color(0xFF0F172A))
+                        )
+                    }
+                    att.fileType == "IMAGE" -> {
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -855,8 +973,24 @@ fun NoticeDetailDialog(
                                 )
                             }
                         }
-                    } else {
-                        // Document content preview slate
+                    }
+                    att.fileType == "PDF" && pdfBitmap != null -> {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Image(
+                                bitmap = pdfBitmap.asImageBitmap(),
+                                contentDescription = "PDF Page Preview",
+                                contentScale = ContentScale.FillWidth,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(Color.White)
+                            )
+                        }
+                    }
+                    else -> {
                         Surface(
                             color = MaterialTheme.colorScheme.surfaceVariant,
                             shape = RoundedCornerShape(8.dp),
@@ -864,14 +998,14 @@ fun NoticeDetailDialog(
                         ) {
                             Column(modifier = Modifier.padding(12.dp)) {
                                 Text(
-                                    text = "DOCUMENT CONTENT SNIPPET:",
+                                    text = "DOCUMENT CONTENT PREVIEW:",
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 11.sp,
                                     color = MaterialTheme.colorScheme.primary
                                 )
                                 Spacer(modifier = Modifier.height(6.dp))
                                 Text(
-                                    text = att.previewSnippet.ifEmpty {
+                                    text = textPreviewContent.ifEmpty {
                                         "Government College of Engineering, Salem (Autonomous)\nOfficial Circular Reference: GCE/OFFICE/NOTICES/2026\nAuthorized signatory: Head of Department & Principal"
                                     },
                                     fontSize = 12.sp,
@@ -881,30 +1015,30 @@ fun NoticeDetailDialog(
                         }
                     }
                 }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        saveAttachmentToDownloads(context, att)
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Download,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Download File")
-                }
-            },
-            dismissButton = {
-                OutlinedButton(onClick = { previewAttachment = null }) {
-                    Text("Close")
-                }
             }
-        )
-    }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    saveAttachmentToDownloads(context, att)
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Download,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Download File")
+            }
+        },
+        dismissButton = {
+            OutlinedButton(onClick = onDismiss) {
+                Text("Close")
+            }
+        }
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -1470,9 +1604,16 @@ fun LoginDialog(
     var captchaInput by remember { mutableStateOf("") }
     var newPassword by remember { mutableStateOf("") }
     var confirmPassword by remember { mutableStateOf("") }
+    var newPasswordVisible by remember { mutableStateOf(false) }
     var forgotError by remember { mutableStateOf<String?>(null) }
 
     val authError by viewModel.authError.collectAsState()
+    val matchedForgotUser = remember(forgotLoginId, allUsers) {
+        val clean = forgotLoginId.trim()
+        if (clean.isEmpty()) null else allUsers.find { it.loginId.equals(clean, ignoreCase = true) }
+    }
+    val isCaptchaVerified = captchaInput.trim().isNotEmpty() &&
+            captchaInput.trim().equals(captchaCode, ignoreCase = true)
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1485,7 +1626,7 @@ fun LoginDialog(
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = if (isForgotMode) "Forgot Password" else "Portal Sign In",
+                    text = if (isForgotMode) "Forgot Password (CAPTCHA)" else "Portal Sign In",
                     fontWeight = FontWeight.Bold,
                     fontSize = 18.sp
                 )
@@ -1498,6 +1639,63 @@ fun LoginDialog(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
+                // 2-Tab Mode Switcher: Sign In | Forgot Password (CAPTCHA)
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Button(
+                            onClick = {
+                                forgotError = null
+                                isForgotMode = false
+                            },
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(36.dp)
+                                .testTag("tab_signin_mode"),
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                            shape = RoundedCornerShape(6.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (!isForgotMode) MaterialTheme.colorScheme.primary else Color.Transparent,
+                                contentColor = if (!isForgotMode) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        ) {
+                            Text("Sign In", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                        Button(
+                            onClick = {
+                                viewModel.clearAuthError()
+                                if (forgotLoginId.isBlank() && loginId.isNotBlank()) {
+                                    forgotLoginId = loginId.trim()
+                                }
+                                captchaCode = generateCaptchaCode()
+                                captchaInput = ""
+                                forgotError = null
+                                isForgotMode = true
+                            },
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(36.dp)
+                                .testTag("tab_forgot_mode"),
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                            shape = RoundedCornerShape(6.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (isForgotMode) MaterialTheme.colorScheme.primary else Color.Transparent,
+                                contentColor = if (isForgotMode) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        ) {
+                            Text("Forgot Password", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+
                 if (!isForgotMode) {
                     Text(
                         text = "Enter your college Login ID and password to access restricted department circulars or manage notices.",
@@ -1589,7 +1787,7 @@ fun LoginDialog(
                             modifier = Modifier.testTag("forgot_password_button")
                         ) {
                             Text(
-                                text = "Forgot Password?",
+                                text = "Forgot Password? Reset with CAPTCHA",
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.primary
@@ -1598,7 +1796,7 @@ fun LoginDialog(
                     }
                 } else {
                     Text(
-                        text = "Verify your Login ID and enter the security CAPTCHA code below to set a new password.",
+                        text = "Step 1: Enter your Login ID. Step 2: Solve the security CAPTCHA. Step 3: Set your new password.",
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -1621,7 +1819,7 @@ fun LoginDialog(
                     OutlinedTextField(
                         value = forgotLoginId,
                         onValueChange = { forgotLoginId = it },
-                        label = { Text("Login ID (e.g. principal, hod_cse)") },
+                        label = { Text("1. Login ID (e.g. principal, hod_cse, cse_fac1)") },
                         leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
                         modifier = Modifier
                             .fillMaxWidth()
@@ -1629,8 +1827,26 @@ fun LoginDialog(
                         singleLine = true
                     )
 
+                    if (forgotLoginId.trim().isNotEmpty()) {
+                        if (matchedForgotUser != null) {
+                            Text(
+                                text = "✓ Account verified: ${matchedForgotUser.fullName} (${matchedForgotUser.role} • ${matchedForgotUser.departmentCode})",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = PriorityLowGreen
+                            )
+                        } else {
+                            Text(
+                                text = "✗ No account found matching '${forgotLoginId.trim()}'",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = PriorityHighRed
+                            )
+                        }
+                    }
+
                     Text(
-                        text = "Security CAPTCHA Verification",
+                        text = "2. Security CAPTCHA Verification",
                         fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.primary
@@ -1647,19 +1863,36 @@ fun LoginDialog(
                     OutlinedTextField(
                         value = captchaInput,
                         onValueChange = { captchaInput = it.uppercase() },
-                        label = { Text("Enter CAPTCHA Code Shown Above") },
+                        label = { Text("Enter 6-Character CAPTCHA Shown Above") },
                         modifier = Modifier
                             .fillMaxWidth()
                             .testTag("forgot_captcha_input"),
                         singleLine = true
                     )
 
+                    if (captchaInput.trim().isNotEmpty()) {
+                        Text(
+                            text = if (isCaptchaVerified) "✓ CAPTCHA security code verified!" else "Keep typing the 6-character code shown above...",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (isCaptchaVerified) PriorityLowGreen else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
                     OutlinedTextField(
                         value = newPassword,
                         onValueChange = { newPassword = it },
-                        label = { Text("New Password") },
+                        label = { Text("3. New Password (min. 4 chars)") },
                         leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
-                        visualTransformation = PasswordVisualTransformation(),
+                        trailingIcon = {
+                            IconButton(onClick = { newPasswordVisible = !newPasswordVisible }) {
+                                Icon(
+                                    imageVector = if (newPasswordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                    contentDescription = "Toggle new password"
+                                )
+                            }
+                        },
+                        visualTransformation = if (newPasswordVisible) VisualTransformation.None else PasswordVisualTransformation(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                         modifier = Modifier
                             .fillMaxWidth()
@@ -1670,9 +1903,17 @@ fun LoginDialog(
                     OutlinedTextField(
                         value = confirmPassword,
                         onValueChange = { confirmPassword = it },
-                        label = { Text("Confirm New Password") },
+                        label = { Text("4. Confirm New Password") },
                         leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
-                        visualTransformation = PasswordVisualTransformation(),
+                        trailingIcon = {
+                            IconButton(onClick = { newPasswordVisible = !newPasswordVisible }) {
+                                Icon(
+                                    imageVector = if (newPasswordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                    contentDescription = "Toggle confirm password"
+                                )
+                            }
+                        },
+                        visualTransformation = if (newPasswordVisible) VisualTransformation.None else PasswordVisualTransformation(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                         modifier = Modifier
                             .fillMaxWidth()

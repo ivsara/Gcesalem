@@ -3,6 +3,13 @@
   const SESSION_KEY = 'gce_salem_current_user_v4';
   const CLOUD_SYNC_TOPIC = 'gce_salem_notice_board_sync_v4';
   const CLOUD_SYNC_URL = `https://ntfy.sh/${CLOUD_SYNC_TOPIC}`;
+  const CLOUD_FILES_TOPIC = 'gce_salem_notice_files_v4';
+  const CLOUD_FILES_URL = `https://ntfy.sh/${CLOUD_FILES_TOPIC}`;
+  const CLOUD_BLOBS_TOPIC = 'gce_salem_notice_blobs_v4';
+  const CLOUD_BLOBS_URL = `https://ntfy.sh/${CLOUD_BLOBS_TOPIC}`;
+
+  const cloudBlobChunks = {}; // attId -> { total, parts: {} }
+  const cloudBlobComplete = {}; // attId -> full dataUrl string
 
   const escapeHtml = val =>
     String(val ?? '').replace(/[&<>"']/g, c => ({
@@ -18,6 +25,24 @@
 
   function createSampleDataUrl(filename, content) {
     return 'data:text/plain;charset=utf-8,' + encodeURIComponent(content);
+  }
+
+  function createSamplePosterDataUrl(filename, subtitle) {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="450" viewBox="0 0 800 450">
+      <defs>
+        <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#0b3c5d"/>
+          <stop offset="100%" stop-color="#155eef"/>
+        </linearGradient>
+      </defs>
+      <rect width="800" height="450" rx="20" fill="url(#bg)"/>
+      <rect x="28" y="28" width="744" height="394" rx="14" fill="none" stroke="#f59e0b" stroke-width="2" stroke-opacity="0.6"/>
+      <text x="400" y="110" text-anchor="middle" fill="#fbbf24" font-family="sans-serif" font-size="18" font-weight="bold">GOVERNMENT COLLEGE OF ENGINEERING, SALEM (AUTONOMOUS)</text>
+      <text x="400" y="185" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="28" font-weight="bold">${escapeHtml(filename)}</text>
+      <text x="400" y="245" text-anchor="middle" fill="#e2e8f0" font-family="sans-serif" font-size="17">${escapeHtml(String(subtitle || 'Official Campus Event Poster').slice(0, 80))}</text>
+      <text x="400" y="360" text-anchor="middle" fill="#93c5fd" font-family="sans-serif" font-size="14">Digital Notice Board Verified Visual Attachment</text>
+    </svg>`;
+    return 'data:image/svg+xml;base64,' + window.btoa(unescape(encodeURIComponent(svg)));
   }
 
   function createValidPdfBytes(title, bodyText) {
@@ -53,7 +78,7 @@
   function buildDownloadBlob(att) {
     const filename = String((att && att.filename) || 'GCE_Salem_Circular.pdf');
     const ext = filename.split('.').pop().toLowerCase();
-    const dataUrl = String((att && att.dataUrl) || '');
+    const dataUrl = String((att && (att.dataUrl || cloudBlobComplete[att.id])) || '');
 
     // If a real uploaded file (base64 data URL) is stored, decode exact binary bytes
     if (dataUrl.startsWith('data:') && dataUrl.includes(';base64,')) {
@@ -73,6 +98,14 @@
     if (ext === 'pdf') {
       return new Blob([createValidPdfBytes(filename, preview)], { type: 'application/pdf' });
     }
+    if (['png', 'jpg', 'jpeg', 'svg', 'webp'].includes(ext) || (att && att.fileType === 'IMAGE')) {
+      const posterUrl = createSamplePosterDataUrl(filename, preview);
+      const b64 = posterUrl.split(';base64,')[1];
+      const bin = window.atob(b64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      return new Blob([bytes], { type: 'image/svg+xml' });
+    }
     if (ext === 'xls' || ext === 'xlsx' || ext === 'csv') {
       const csvContent = preview.includes(',')
         ? preview
@@ -84,13 +117,55 @@
       if (ext === 'pdf') {
         return new Blob([createValidPdfBytes(filename, decoded)], { type: 'application/pdf' });
       }
-      return new Blob([decoded], { type: 'application/octet-stream' });
+      return new Blob([decoded], { type: 'text/plain;charset=utf-8' });
     }
-    return new Blob([preview], { type: 'application/octet-stream' });
+    return new Blob([preview], { type: 'text/plain;charset=utf-8' });
   }
 
-  function triggerAttachmentDownload(att) {
+  async function ensureAttachmentHydrated(att) {
+    if (!att) return att;
+    if (att.dataUrl && att.dataUrl.includes(';base64,')) {
+      return att;
+    }
+    if (cloudBlobComplete[att.id]) {
+      att.dataUrl = cloudBlobComplete[att.id];
+      saveDb(db);
+      return att;
+    }
+    // Pull any recent chunks from CLOUD_BLOBS_URL
+    await syncCloudBlobs();
+    if (cloudBlobComplete[att.id]) {
+      att.dataUrl = cloudBlobComplete[att.id];
+      saveDb(db);
+      return att;
+    }
+    // If remoteUrl is available from ntfy file upload, fetch binary and convert to dataUrl
+    if (att.remoteUrl) {
+      try {
+        const resp = await fetch(att.remoteUrl);
+        if (resp.ok) {
+          const blob = await resp.blob();
+          const fetchedDataUrl = await new Promise(resolve => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result || ''));
+            reader.onerror = () => resolve('');
+            reader.readAsDataURL(blob);
+          });
+          if (fetchedDataUrl && fetchedDataUrl.includes(';base64,')) {
+            att.dataUrl = fetchedDataUrl;
+            cloudBlobComplete[att.id] = fetchedDataUrl;
+            saveDb(db);
+            return att;
+          }
+        }
+      } catch (_) {}
+    }
+    return att;
+  }
+
+  async function triggerAttachmentDownload(att) {
     if (!att) return;
+    await ensureAttachmentHydrated(att);
     const filename = String(att.filename || 'GCE_Salem_Notice_Attachment.pdf');
     const blob = buildDownloadBlob(att);
     const blobUrl = URL.createObjectURL(blob);
@@ -103,7 +178,7 @@
     setTimeout(() => {
       document.body.removeChild(link);
       URL.revokeObjectURL(blobUrl);
-    }, 1500);
+    }, 2000);
   }
 
   const DEPT_LIST = [
@@ -445,14 +520,19 @@
         expiresAt: Number(incoming.expiresAt || 0),
         isPinned: Boolean(incoming.isPinned),
         visibility: String(incoming.visibility || 'PUBLIC'),
-        attachments: (incoming.attachments || []).map(a => ({
-          id: Number(a.id || Date.now()),
-          filename: String(a.filename || 'Circular.pdf'),
-          fileType: String(a.fileType || 'PDF'),
-          size: Number(a.size || 102400),
-          previewText: String(a.previewText || 'Official GCE Salem Circular'),
-          dataUrl: a.dataUrl || createSampleDataUrl(a.filename || 'Circular.pdf', a.previewText || a.filename || 'GCE Salem Circular')
-        }))
+        attachments: (incoming.attachments || []).map(a => {
+          const attId = Number(a.id || Date.now());
+          const syncedDataUrl = a.dataUrl || cloudBlobComplete[attId] || '';
+          return {
+            id: attId,
+            filename: String(a.filename || 'Circular.pdf'),
+            fileType: String(a.fileType || 'PDF'),
+            size: Number(a.size || 102400),
+            previewText: String(a.previewText || 'Official GCE Salem Circular'),
+            remoteUrl: String(a.remoteUrl || ''),
+            dataUrl: syncedDataUrl || createSampleDataUrl(a.filename || 'Circular.pdf', a.previewText || a.filename || 'GCE Salem Circular')
+          };
+        })
       };
 
       if (idx === -1) {
@@ -463,8 +543,8 @@
         if (existingAtts.length) {
           normalized.attachments = (normalized.attachments || []).map(att => {
             const match = existingAtts.find(e => e.id === att.id || e.filename === att.filename);
-            if (match && match.dataUrl && (!att.dataUrl || !att.dataUrl.includes(';base64,'))) {
-              return { ...att, dataUrl: match.dataUrl };
+            if (match && match.dataUrl && match.dataUrl.includes(';base64,') && (!att.dataUrl || !att.dataUrl.includes(';base64,'))) {
+              return { ...att, dataUrl: match.dataUrl, remoteUrl: att.remoteUrl || match.remoteUrl || '' };
             }
             return att;
           });
@@ -484,6 +564,153 @@
     return false;
   }
 
+  function applyBlobChunkPayload(payload) {
+    if (!payload || payload.action !== 'FILE_CHUNK' || !payload.attId) return false;
+    const attId = Number(payload.attId);
+    const total = Number(payload.total || 1);
+    const idx = Number(payload.idx || 0);
+    const chunk = String(payload.chunk || '');
+    if (!cloudBlobChunks[attId]) {
+      cloudBlobChunks[attId] = { total, parts: {}, count: 0 };
+    }
+    const entry = cloudBlobChunks[attId];
+    if (entry.parts[idx] === undefined) {
+      entry.parts[idx] = chunk;
+      entry.count += 1;
+    }
+    if (entry.count >= entry.total) {
+      let full = '';
+      for (let i = 0; i < entry.total; i++) {
+        full += entry.parts[i] || '';
+      }
+      if (full.startsWith('data:')) {
+        cloudBlobComplete[attId] = full;
+        let updated = false;
+        db.notices.forEach(n => {
+          (n.attachments || []).forEach(a => {
+            if (Number(a.id) === attId && (!a.dataUrl || !a.dataUrl.includes(';base64,'))) {
+              a.dataUrl = full;
+              updated = true;
+            }
+          });
+        });
+        return updated;
+      }
+    }
+    return false;
+  }
+
+  async function syncCloudBlobs() {
+    try {
+      const resp = await fetch(`${CLOUD_BLOBS_URL}/json?poll=1&since=24h&_t=${Date.now()}`, {
+        cache: 'no-store'
+      });
+      if (!resp.ok) return false;
+      const text = await resp.text();
+      const lines = text.trim().split('\n').filter(Boolean);
+      let updated = false;
+      for (const line of lines) {
+        try {
+          const env = JSON.parse(line);
+          if (env.event === 'message' && env.message) {
+            const payload = JSON.parse(env.message);
+            if (applyBlobChunkPayload(payload)) updated = true;
+          }
+        } catch (_) {}
+      }
+      if (updated) saveDb(db);
+      return updated;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  async function compressImageDataUrlForSync(dataUrl) {
+    if (!dataUrl || !dataUrl.startsWith('data:image/') || dataUrl.length <= 45000) {
+      return dataUrl;
+    }
+    return new Promise(resolve => {
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const maxDim = 900;
+          let w = img.width || 600;
+          let h = img.height || 400;
+          if (w > maxDim || h > maxDim) {
+            if (w > h) {
+              h = Math.round((h * maxDim) / w);
+              w = maxDim;
+            } else {
+              w = Math.round((w * maxDim) / h);
+              h = maxDim;
+            }
+          }
+          const c = document.createElement('canvas');
+          c.width = w;
+          c.height = h;
+          const ctx = c.getContext('2d');
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, w, h);
+          ctx.drawImage(img, 0, 0, w, h);
+          const compressed = c.toDataURL('image/jpeg', 0.76);
+          resolve(compressed.length < dataUrl.length ? compressed : dataUrl);
+        } catch (_) {
+          resolve(dataUrl);
+        }
+      };
+      img.onerror = () => resolve(dataUrl);
+      img.src = dataUrl;
+    });
+  }
+
+  async function uploadAttachmentToCloud(att, rawFile) {
+    if (!att) return;
+    // 1. Try direct binary file upload to CLOUD_FILES_URL so ntfy hosts the full file URL
+    try {
+      const blobToUpload = rawFile || buildDownloadBlob(att);
+      const safeName = String(att.filename || 'attachment.bin').replace(/[^a-zA-Z0-9._-]/g, '_');
+      const putResp = await fetch(CLOUD_FILES_URL, {
+        method: 'PUT',
+        headers: {
+          Filename: safeName
+        },
+        body: blobToUpload
+      });
+      if (putResp.ok) {
+        const meta = await putResp.json();
+        if (meta && meta.attachment && meta.attachment.url) {
+          att.remoteUrl = meta.attachment.url;
+        }
+      }
+    } catch (_) {}
+
+    // 2. Also push safe 2,600-char base64 chunks to CLOUD_BLOBS_URL so all devices can preview/download even without PUT
+    try {
+      let syncUrl = att.dataUrl || '';
+      if (syncUrl.startsWith('data:image/')) {
+        syncUrl = await compressImageDataUrlForSync(syncUrl);
+      }
+      if (syncUrl && syncUrl.startsWith('data:') && syncUrl.length <= 160000) {
+        const chunkSize = 2600;
+        const total = Math.ceil(syncUrl.length / chunkSize);
+        for (let idx = 0; idx < total; idx++) {
+          const chunk = syncUrl.slice(idx * chunkSize, (idx + 1) * chunkSize);
+          await fetch(CLOUD_BLOBS_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+            body: JSON.stringify({
+              action: 'FILE_CHUNK',
+              attId: att.id,
+              idx,
+              total,
+              chunk
+            })
+          });
+        }
+      }
+    } catch (_) {}
+  }
+
   async function publishCloudEvent(eventObj) {
     try {
       const compactEvent = JSON.parse(JSON.stringify(eventObj));
@@ -493,8 +720,10 @@
           filename: a.filename,
           fileType: a.fileType,
           size: a.size,
-          previewText: String(a.previewText || '').slice(0, 240),
-          dataUrl: a.dataUrl && String(a.dataUrl).length < 45000 ? a.dataUrl : undefined
+          remoteUrl: a.remoteUrl || '',
+          previewText: String(a.previewText || '').slice(0, 280),
+          // Keep inline dataUrl only if <= 1800 chars so total JSON message is always < 4096 bytes
+          dataUrl: a.dataUrl && String(a.dataUrl).length <= 1800 ? a.dataUrl : undefined
         }));
       }
       await fetch(CLOUD_SYNC_URL, {
@@ -508,6 +737,7 @@
   async function syncFromCloud() {
     try {
       if (syncStatusTextEl) syncStatusTextEl.textContent = 'Syncing notices…';
+      await syncCloudBlobs();
       const resp = await fetch(`${CLOUD_SYNC_URL}/json?poll=1&since=24h&_t=${Date.now()}`, {
         cache: 'no-store'
       });
@@ -518,9 +748,19 @@
       for (const line of lines) {
         try {
           const env = JSON.parse(line);
-          if (env.event === 'message' && env.message) {
-            const payload = JSON.parse(env.message);
-            if (applyCloudPayload(payload)) changed = true;
+          if (env.event === 'message') {
+            if (env.attachment && env.attachment.url) {
+              try {
+                const attResp = await fetch(env.attachment.url);
+                if (attResp.ok) {
+                  const attPayload = await attResp.json();
+                  if (applyCloudPayload(attPayload)) changed = true;
+                }
+              } catch (_) {}
+            } else if (env.message) {
+              const payload = JSON.parse(env.message);
+              if (applyCloudPayload(payload)) changed = true;
+            }
           }
         } catch (_) {}
       }
@@ -539,11 +779,12 @@
     if (typeof EventSource === 'undefined') return;
     try {
       const es = new EventSource(`${CLOUD_SYNC_URL}/sse`);
-      es.onmessage = ev => {
+      es.onmessage = async ev => {
         try {
           const env = JSON.parse(ev.data);
           if (env.event === 'message' && env.message) {
             const payload = JSON.parse(env.message);
+            await syncCloudBlobs();
             if (applyCloudPayload(payload)) {
               saveDb(db);
               renderNotices();
@@ -715,10 +956,13 @@
     }
   }
 
+  const btnHeaderForgot = document.getElementById('btn-header-forgot');
+
   function renderAuthUI() {
     if (!currentUser) {
       userChipContainerEl.classList.add('hidden');
       btnOpenLogin.classList.remove('hidden');
+      if (btnHeaderForgot) btnHeaderForgot.classList.remove('hidden');
       btnLogout.classList.add('hidden');
       navPublishEl.classList.add('hidden');
       navAdminEl.classList.add('hidden');
@@ -734,6 +978,7 @@
       userFullnameEl.textContent = currentUser.fullName;
       userRoleDeptEl.textContent = `${currentUser.role} · ${currentUser.department}`;
       btnOpenLogin.classList.add('hidden');
+      if (btnHeaderForgot) btnHeaderForgot.classList.add('hidden');
       btnLogout.classList.remove('hidden');
       statRoleEl.textContent = currentUser.fullName;
 
@@ -1044,6 +1289,7 @@
 
     const files = Array.from(noticeFilesInput.files || []);
     const uploadedAttachments = [];
+    const rawFileMap = {};
     for (const file of files) {
       if (file.size > 10 * 1024 * 1024) {
         window.alert(`File ${file.name} exceeds the 10 MB limit.`);
@@ -1056,14 +1302,30 @@
         reader.readAsDataURL(file);
       });
       const ext = file.name.split('.').pop().toUpperCase();
-      uploadedAttachments.push({
-        id: Date.now() + Math.floor(Math.random() * 1000),
+      let snippet = `Attached Circular: ${file.name} (${(file.size / 1024).toFixed(1)} KB) — Uploaded by ${currentUser.fullName}`;
+      if (['TXT', 'CSV'].includes(ext) && file.size < 200000) {
+        const textContent = await new Promise(resolve => {
+          const r = new FileReader();
+          r.onload = () => resolve(String(r.result || ''));
+          r.onerror = () => resolve('');
+          r.readAsText(file);
+        });
+        if (textContent.trim()) {
+          snippet = textContent.trim().slice(0, 600);
+        }
+      }
+      const attId = Date.now() + Math.floor(Math.random() * 1000);
+      const attObj = {
+        id: attId,
         filename: file.name,
-        fileType: ['JPG', 'JPEG', 'PNG'].includes(ext) ? 'IMAGE' : ext,
+        fileType: ['JPG', 'JPEG', 'PNG', 'WEBP', 'GIF', 'SVG'].includes(ext) ? 'IMAGE' : ext,
         size: file.size,
-        previewText: `Attached Circular: ${file.name} (${(file.size / 1024).toFixed(1)} KB)`,
+        previewText: snippet,
+        remoteUrl: '',
         dataUrl
-      });
+      };
+      uploadedAttachments.push(attObj);
+      rawFileMap[attId] = file;
     }
 
     const expiryVal = noticeExpiryInput.value ? new Date(noticeExpiryInput.value).getTime() : 0;
@@ -1118,33 +1380,82 @@
     document.getElementById('notices').scrollIntoView({ behavior: 'smooth' });
 
     if (savedNotice) {
+      for (const att of uploadedAttachments) {
+        await uploadAttachmentToCloud(att, rawFileMap[att.id]);
+      }
+      saveDb(db);
       await publishCloudEvent({ action: 'UPSERT', notice: savedNotice });
     }
   });
 
-  // Attachment Preview Modal
+  // Attachment Preview Modal (Previewable & Downloadable across all devices)
   const previewModal = document.getElementById('preview-modal');
   let activePreviewAttachment = null;
+  let activePreviewBlobUrl = null;
 
-  function openAttachmentPreview(att) {
+  async function openAttachmentPreview(att) {
     activePreviewAttachment = att;
-    document.getElementById('preview-title').textContent = att.filename;
-    const bodyEl = document.getElementById('preview-body');
-
-    if (att.fileType === 'IMAGE' && att.dataUrl && att.dataUrl.startsWith('data:image')) {
-      bodyEl.innerHTML = `<img src="${att.dataUrl}" alt="${escapeHtml(att.filename)}" style="max-width:100%;border-radius:12px;">`;
-    } else if (att.dataUrl && att.dataUrl.startsWith('data:application/pdf')) {
-      bodyEl.innerHTML = `
-        <iframe src="${att.dataUrl}" style="width:100%;height:320px;border:1px solid #e2e8f0;border-radius:10px;" title="${escapeHtml(att.filename)}"></iframe>
-        <div style="margin-top:8px;font-size:12px;color:#475467;">Click "⬇ Download File" below to save <b>${escapeHtml(att.filename)}</b> to your device.</div>`;
-    } else {
-      bodyEl.innerHTML = `
-        <div style="background:#f8fafc;color:#1e293b;padding:14px;border-radius:10px;border:1px solid #e2e8f0;white-space:pre-line;font-family:monospace;font-size:12px;">
-          ${escapeHtml(att.previewText || 'Official GCE Salem Circular Attachment')}
-        </div>`;
+    if (activePreviewBlobUrl) {
+      URL.revokeObjectURL(activePreviewBlobUrl);
+      activePreviewBlobUrl = null;
     }
 
+    document.getElementById('preview-title').textContent = att.filename;
+    const bodyEl = document.getElementById('preview-body');
+    bodyEl.innerHTML = `<div style="padding:18px;text-align:center;color:#475467;">Loading attachment preview…</div>`;
     previewModal.classList.add('open');
+
+    await ensureAttachmentHydrated(att);
+
+    const filename = String(att.filename || 'Circular.pdf');
+    const ext = filename.split('.').pop().toLowerCase();
+    const isImage =
+      att.fileType === 'IMAGE' ||
+      ['jpg', 'jpeg', 'png', 'webp', 'gif', 'svg'].includes(ext) ||
+      (att.dataUrl && att.dataUrl.startsWith('data:image/'));
+    const isPdf =
+      att.fileType === 'PDF' ||
+      ext === 'pdf' ||
+      (att.dataUrl && att.dataUrl.startsWith('data:application/pdf'));
+
+    const blob = buildDownloadBlob(att);
+    activePreviewBlobUrl = URL.createObjectURL(blob);
+
+    if (isImage) {
+      const imgSrc =
+        att.dataUrl && att.dataUrl.startsWith('data:image/')
+          ? att.dataUrl
+          : createSamplePosterDataUrl(filename, att.previewText);
+      bodyEl.innerHTML = `
+        <div style="text-align:center;background:#0f172a;padding:12px;border-radius:12px;">
+          <img src="${imgSrc}" alt="${escapeHtml(filename)}" style="max-width:100%;max-height:52vh;border-radius:8px;object-fit:contain;">
+        </div>
+        <div style="margin-top:10px;font-size:12px;color:#475467;display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;">
+          <span><b>File:</b> ${escapeHtml(filename)}</span>
+          <span><b>Size:</b> ${(Number(att.size || 102400) / 1024).toFixed(1)} KB</span>
+        </div>`;
+    } else if (isPdf) {
+      bodyEl.innerHTML = `
+        <iframe src="${activePreviewBlobUrl}" style="width:100%;height:340px;border:1px solid #cbd5e1;border-radius:10px;background:#fff;" title="${escapeHtml(filename)}"></iframe>
+        <div style="margin-top:10px;background:#f8fafc;color:#1e293b;padding:12px;border-radius:10px;border:1px solid #e2e8f0;white-space:pre-line;font-family:monospace;font-size:12px;">
+          <b>PDF Document Summary (${escapeHtml(filename)}):</b>\n${escapeHtml(att.previewText || 'Official GCE Salem PDF Circular')}
+        </div>`;
+    } else {
+      let textPreview = att.previewText || 'Official GCE Salem Circular Attachment';
+      if (att.dataUrl && att.dataUrl.startsWith('data:text/')) {
+        try {
+          if (att.dataUrl.includes(';base64,')) {
+            textPreview = window.atob(att.dataUrl.split(';base64,')[1]);
+          } else if (att.dataUrl.includes(',')) {
+            textPreview = decodeURIComponent(att.dataUrl.split(',')[1]);
+          }
+        } catch (_) {}
+      }
+      bodyEl.innerHTML = `
+        <div style="background:#f8fafc;color:#1e293b;padding:14px;border-radius:10px;border:1px solid #e2e8f0;white-space:pre-line;font-family:monospace;font-size:12px;">
+          <b>Document Preview (${escapeHtml(filename)}):</b>\n\n${escapeHtml(textPreview)}
+        </div>`;
+    }
   }
 
   document.getElementById('preview-download-btn').addEventListener('click', () => {
@@ -1153,20 +1464,51 @@
     }
   });
 
+  const previewOpenTabBtn = document.getElementById('preview-open-tab-btn');
+  if (previewOpenTabBtn) {
+    previewOpenTabBtn.addEventListener('click', async () => {
+      if (!activePreviewAttachment) return;
+      await ensureAttachmentHydrated(activePreviewAttachment);
+      const blob = buildDownloadBlob(activePreviewAttachment);
+      const url = URL.createObjectURL(blob);
+      window.open(url, '_blank', 'noopener');
+    });
+  }
+
   document.getElementById('btn-close-preview').addEventListener('click', () => {
     previewModal.classList.remove('open');
   });
 
-  // Login Modal & Forgot Password with CAPTCHA
+  // Login Modal & Full Forgot Password Setup with CAPTCHA
   const loginModal = document.getElementById('login-modal');
   const loginModalTitleEl = document.getElementById('login-modal-title');
+  const tabLoginModeBtn = document.getElementById('tab-login-mode');
+  const tabForgotModeBtn = document.getElementById('tab-forgot-mode');
   const loginViewEl = document.getElementById('login-view');
   const forgotViewEl = document.getElementById('forgot-view');
   const loginErrorEl = document.getElementById('login-error');
   const loginSuccessEl = document.getElementById('login-success');
   const forgotErrorEl = document.getElementById('forgot-error');
+  const forgotAccountStatusEl = document.getElementById('forgot-account-status');
+  const captchaMatchStatusEl = document.getElementById('captcha-match-status');
   const captchaCanvas = document.getElementById('captcha-canvas');
   let currentCaptchaCode = '';
+
+  function updateModalTabStyles(isForgot) {
+    if (tabLoginModeBtn && tabForgotModeBtn) {
+      if (isForgot) {
+        tabForgotModeBtn.style.background = '#155eef';
+        tabForgotModeBtn.style.color = '#fff';
+        tabLoginModeBtn.style.background = 'transparent';
+        tabLoginModeBtn.style.color = '#334155';
+      } else {
+        tabLoginModeBtn.style.background = '#155eef';
+        tabLoginModeBtn.style.color = '#fff';
+        tabForgotModeBtn.style.background = 'transparent';
+        tabForgotModeBtn.style.color = '#334155';
+      }
+    }
+  }
 
   function generateCaptcha() {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -1175,6 +1517,11 @@
       code += chars.charAt(Math.floor(Math.random() * chars.length));
     }
     currentCaptchaCode = code;
+
+    if (captchaMatchStatusEl) {
+      captchaMatchStatusEl.textContent = 'Enter the 6-character security code shown above.';
+      captchaMatchStatusEl.style.color = '#475467';
+    }
 
     if (captchaCanvas && captchaCanvas.getContext) {
       const ctx = captchaCanvas.getContext('2d');
@@ -1190,30 +1537,30 @@
       ctx.fillRect(0, 0, w, h);
 
       // Security noise lines
-      for (let i = 0; i < 5; i++) {
-        ctx.strokeStyle = i % 2 === 0 ? 'rgba(21, 94, 239, 0.35)' : 'rgba(15, 23, 42, 0.25)';
-        ctx.lineWidth = 1.4;
+      for (let i = 0; i < 6; i++) {
+        ctx.strokeStyle = i % 2 === 0 ? 'rgba(21, 94, 239, 0.38)' : 'rgba(15, 23, 42, 0.25)';
+        ctx.lineWidth = 1.5;
         ctx.beginPath();
-        ctx.moveTo(Math.random() * 30, Math.random() * h);
-        ctx.lineTo(w - Math.random() * 30, Math.random() * h);
+        ctx.moveTo(Math.random() * 25, Math.random() * h);
+        ctx.lineTo(w - Math.random() * 25, Math.random() * h);
         ctx.stroke();
       }
 
       // Security noise dots
-      for (let i = 0; i < 28; i++) {
+      for (let i = 0; i < 32; i++) {
         ctx.fillStyle = 'rgba(30, 41, 59, 0.28)';
         ctx.beginPath();
-        ctx.arc(Math.random() * w, Math.random() * h, 1.3, 0, Math.PI * 2);
+        ctx.arc(Math.random() * w, Math.random() * h, 1.4, 0, Math.PI * 2);
         ctx.fill();
       }
 
       // Draw each character with slight rotation
-      ctx.font = 'bold 24px monospace';
+      ctx.font = 'bold 25px monospace';
       ctx.textBaseline = 'middle';
       for (let i = 0; i < code.length; i++) {
         const ch = code[i];
-        const x = 22 + i * 26;
-        const y = h / 2 + (Math.random() * 6 - 3);
+        const x = 24 + i * 28;
+        const y = h / 2 + (Math.random() * 8 - 4);
         const angle = (Math.random() - 0.5) * 0.35;
         ctx.save();
         ctx.translate(x, y);
@@ -1225,7 +1572,26 @@
     }
   }
 
+  function updateForgotAccountLookup() {
+    if (!forgotAccountStatusEl) return;
+    const raw = document.getElementById('forgot-login-id').value.trim().toLowerCase();
+    if (!raw) {
+      forgotAccountStatusEl.textContent = 'Enter your registered GCE Salem Login ID.';
+      forgotAccountStatusEl.style.color = '#475467';
+      return;
+    }
+    const found = db.users.find(u => u.loginId.toLowerCase() === raw);
+    if (found) {
+      forgotAccountStatusEl.textContent = `✓ Account Verified: ${found.fullName} (Role: ${found.role} · Dept: ${found.department})`;
+      forgotAccountStatusEl.style.color = '#067647';
+    } else {
+      forgotAccountStatusEl.textContent = '✗ No registered account matches this Login ID.';
+      forgotAccountStatusEl.style.color = '#b42318';
+    }
+  }
+
   function showLoginView(successMessage = '') {
+    updateModalTabStyles(false);
     if (loginModalTitleEl) loginModalTitleEl.textContent = 'Sign in to GCE Salem Portal';
     if (loginViewEl) loginViewEl.classList.remove('hidden');
     if (forgotViewEl) forgotViewEl.classList.add('hidden');
@@ -1241,7 +1607,8 @@
   }
 
   function showForgotView() {
-    if (loginModalTitleEl) loginModalTitleEl.textContent = 'Forgot Password — Security Verification';
+    updateModalTabStyles(true);
+    if (loginModalTitleEl) loginModalTitleEl.textContent = 'Forgot Password — CAPTCHA Reset';
     if (loginViewEl) loginViewEl.classList.add('hidden');
     if (forgotViewEl) forgotViewEl.classList.remove('hidden');
     if (forgotErrorEl) forgotErrorEl.classList.add('hidden');
@@ -1250,6 +1617,7 @@
     document.getElementById('forgot-captcha-input').value = '';
     document.getElementById('forgot-new-pass').value = '';
     document.getElementById('forgot-confirm-pass').value = '';
+    updateForgotAccountLookup();
     generateCaptcha();
   }
 
@@ -1259,12 +1627,52 @@
     document.getElementById('login-pass-input').value = '';
     loginModal.classList.add('open');
   });
+  if (btnHeaderForgot) {
+    btnHeaderForgot.addEventListener('click', () => {
+      document.getElementById('login-id-input').value = '';
+      showForgotView();
+      loginModal.classList.add('open');
+    });
+  }
   document.getElementById('btn-close-login').addEventListener('click', () => {
     loginModal.classList.remove('open');
   });
   document.getElementById('btn-open-forgot').addEventListener('click', showForgotView);
   document.getElementById('btn-back-to-login').addEventListener('click', () => showLoginView(''));
+  if (tabLoginModeBtn) tabLoginModeBtn.addEventListener('click', () => showLoginView(''));
+  if (tabForgotModeBtn) tabForgotModeBtn.addEventListener('click', showForgotView);
   document.getElementById('btn-refresh-captcha').addEventListener('click', generateCaptcha);
+
+  document.getElementById('forgot-login-id').addEventListener('input', updateForgotAccountLookup);
+  document.getElementById('forgot-captcha-input').addEventListener('input', e => {
+    if (!captchaMatchStatusEl) return;
+    const val = e.target.value.trim().toUpperCase();
+    if (!val) {
+      captchaMatchStatusEl.textContent = 'Enter the 6-character security code shown above.';
+      captchaMatchStatusEl.style.color = '#475467';
+    } else if (val === currentCaptchaCode.toUpperCase()) {
+      captchaMatchStatusEl.textContent = '✓ CAPTCHA code verified!';
+      captchaMatchStatusEl.style.color = '#067647';
+    } else {
+      captchaMatchStatusEl.textContent = 'Keep typing the 6-character CAPTCHA code…';
+      captchaMatchStatusEl.style.color = '#475467';
+    }
+  });
+
+  const loginShowPass = document.getElementById('login-show-pass');
+  if (loginShowPass) {
+    loginShowPass.addEventListener('change', e => {
+      document.getElementById('login-pass-input').type = e.target.checked ? 'text' : 'password';
+    });
+  }
+  const forgotShowPass = document.getElementById('forgot-show-pass');
+  if (forgotShowPass) {
+    forgotShowPass.addEventListener('change', e => {
+      const t = e.target.checked ? 'text' : 'password';
+      document.getElementById('forgot-new-pass').type = t;
+      document.getElementById('forgot-confirm-pass').type = t;
+    });
+  }
 
   btnLogout.addEventListener('click', () => {
     currentUser = null;
@@ -1278,7 +1686,7 @@
     const pass = document.getElementById('login-pass-input').value;
     const user = db.users.find(u => u.loginId.toLowerCase() === id && u.password === pass);
     if (!user) {
-      loginErrorEl.textContent = 'Invalid Login ID or password.';
+      loginErrorEl.textContent = 'Invalid Login ID or password. Use "Forgot Password (CAPTCHA)" above if you need to reset your password.';
       loginErrorEl.classList.remove('hidden');
       if (loginSuccessEl) loginSuccessEl.classList.add('hidden');
       return;
@@ -1303,7 +1711,7 @@
     const confirmPass = document.getElementById('forgot-confirm-pass').value;
 
     if (!captchaEntered || captchaEntered !== currentCaptchaCode.toUpperCase()) {
-      forgotErrorEl.textContent = 'Incorrect CAPTCHA code. Please try the new security code shown.';
+      forgotErrorEl.textContent = 'Incorrect CAPTCHA security code. Please enter the new code generated.';
       forgotErrorEl.classList.remove('hidden');
       document.getElementById('forgot-captcha-input').value = '';
       generateCaptcha();
@@ -1340,7 +1748,7 @@
     saveDb(db);
     document.getElementById('login-id-input').value = user.loginId;
     document.getElementById('login-pass-input').value = '';
-    showLoginView(`Password reset successful for ${user.loginId}. Please sign in with your new password.`);
+    showLoginView(`✓ Password reset successful for ${user.loginId} (${user.fullName}). Sign in below with your new password.`);
     await publishCloudEvent({ action: 'PASSWORD_RESET', loginId: user.loginId, newPassword: newPass });
   });
 

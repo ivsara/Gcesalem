@@ -1,5 +1,7 @@
 package com.example.data.remote
 
+import android.content.Context
+import android.util.Base64
 import com.example.data.model.AttachmentEntity
 import com.example.data.model.NoticeEntity
 import com.example.data.model.NoticeStatus
@@ -13,21 +15,191 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.util.concurrent.TimeUnit
+import kotlin.math.ceil
 
 object CloudNoticeSync {
     private const val SYNC_TOPIC = "gce_salem_notice_board_sync_v4"
     private const val BASE_URL = "https://ntfy.sh/$SYNC_TOPIC"
+    private const val FILES_TOPIC = "gce_salem_notice_files_v4"
+    private const val FILES_URL = "https://ntfy.sh/$FILES_TOPIC"
+    private const val BLOBS_TOPIC = "gce_salem_notice_blobs_v4"
+    private const val BLOBS_URL = "https://ntfy.sh/$BLOBS_TOPIC"
+
+    private var attachmentsDir: File? = null
+    private val cloudBlobChunks = mutableMapOf<Long, MutableMap<Int, String>>()
+    private val cloudBlobTotals = mutableMapOf<Long, Int>()
+    private val cloudBlobComplete = mutableMapOf<Long, String>()
+
+    fun init(context: Context) {
+        val dir = File(context.applicationContext.filesDir, "attachments")
+        if (!dir.exists()) dir.mkdirs()
+        attachmentsDir = dir
+    }
 
     private val client: OkHttpClient by lazy {
         OkHttpClient.Builder()
-            .connectTimeout(6, TimeUnit.SECONDS)
-            .readTimeout(6, TimeUnit.SECONDS)
-            .writeTimeout(6, TimeUnit.SECONDS)
+            .connectTimeout(8, TimeUnit.SECONDS)
+            .readTimeout(8, TimeUnit.SECONDS)
+            .writeTimeout(8, TimeUnit.SECONDS)
             .build()
     }
 
     private val deletedIds = mutableSetOf<Long>()
+
+    private fun mimeForType(filename: String, fileType: String): String {
+        val ext = filename.substringAfterLast('.', "").lowercase()
+        return when {
+            ext == "pdf" || fileType == "PDF" -> "application/pdf"
+            ext == "png" -> "image/png"
+            ext == "jpg" || ext == "jpeg" || fileType == "IMAGE" -> "image/jpeg"
+            ext == "webp" -> "image/webp"
+            ext == "csv" || ext == "xls" || ext == "xlsx" -> "text/csv"
+            else -> "application/octet-stream"
+        }
+    }
+
+    private fun uploadAttachmentBinaryAndChunks(att: AttachmentEntity, attId: Long): String {
+        var remoteUrl = ""
+        try {
+            val dir = attachmentsDir ?: return ""
+            val localFile = File(dir, att.storedFilename).takeIf { it.exists() }
+                ?: File(dir, att.originalFilename).takeIf { it.exists() }
+                ?: return ""
+
+            val bytes = localFile.readBytes()
+            if (bytes.isEmpty()) return ""
+
+            val safeName = att.originalFilename.replace(Regex("[^a-zA-Z0-9._-]"), "_").ifBlank { "attachment.bin" }
+            val mime = mimeForType(att.originalFilename, att.fileType)
+
+            // 1. Direct binary PUT to FILES_URL
+            try {
+                val putReq = Request.Builder()
+                    .url(FILES_URL)
+                    .header("Filename", safeName)
+                    .put(bytes.toRequestBody(mime.toMediaType()))
+                    .build()
+                client.newCall(putReq).execute().use { resp ->
+                    if (resp.isSuccessful) {
+                        val bodyStr = resp.body?.string() ?: ""
+                        if (bodyStr.isNotBlank()) {
+                            val json = JSONObject(bodyStr)
+                            remoteUrl = json.optJSONObject("attachment")?.optString("url", "") ?: ""
+                        }
+                    }
+                }
+            } catch (_: Exception) {}
+
+            // 2. Chunked base64 upload to BLOBS_URL for files <= 120 KB so all devices can preview/download
+            if (bytes.size <= 120 * 1024) {
+                val b64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+                val dataUrl = "data:$mime;base64,$b64"
+                val chunkSize = 2600
+                val total = ceil(dataUrl.length.toDouble() / chunkSize).toInt()
+                for (idx in 0 until total) {
+                    val start = idx * chunkSize
+                    val end = minOf((idx + 1) * chunkSize, dataUrl.length)
+                    val chunk = dataUrl.substring(start, end)
+                    val chunkJson = JSONObject().apply {
+                        put("action", "FILE_CHUNK")
+                        put("attId", attId)
+                        put("idx", idx)
+                        put("total", total)
+                        put("chunk", chunk)
+                    }
+                    val postReq = Request.Builder()
+                        .url(BLOBS_URL)
+                        .post(chunkJson.toString().toRequestBody("text/plain; charset=utf-8".toMediaType()))
+                        .build()
+                    client.newCall(postReq).execute().close()
+                }
+            }
+        } catch (_: Exception) {}
+        return remoteUrl
+    }
+
+    private fun saveDataUrlToLocalFile(dataUrl: String, targetFilename: String): Boolean {
+        try {
+            val dir = attachmentsDir ?: return false
+            if (!dir.exists()) dir.mkdirs()
+            if (dataUrl.startsWith("data:") && dataUrl.contains(";base64,")) {
+                val b64 = dataUrl.substringAfter(";base64,", "")
+                if (b64.isNotBlank()) {
+                    val bytes = Base64.decode(b64, Base64.DEFAULT)
+                    if (bytes.isNotEmpty()) {
+                        File(dir, targetFilename).writeBytes(bytes)
+                        return true
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        return false
+    }
+
+    private fun downloadRemoteUrlToLocalFile(remoteUrl: String, targetFilename: String): Boolean {
+        if (remoteUrl.isBlank()) return false
+        try {
+            val dir = attachmentsDir ?: return false
+            if (!dir.exists()) dir.mkdirs()
+            val req = Request.Builder().url(remoteUrl).get().build()
+            client.newCall(req).execute().use { resp ->
+                if (resp.isSuccessful) {
+                    val bytes = resp.body?.bytes()
+                    if (bytes != null && bytes.isNotEmpty()) {
+                        File(dir, targetFilename).writeBytes(bytes)
+                        return true
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        return false
+    }
+
+    private fun pullCloudBlobs() {
+        try {
+            val req = Request.Builder()
+                .url("$BLOBS_URL/json?poll=1&since=24h")
+                .get()
+                .build()
+            val text = client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return
+                resp.body?.string() ?: ""
+            }
+            if (text.isBlank()) return
+            for (line in text.lines()) {
+                if (line.isBlank()) continue
+                try {
+                    val env = JSONObject(line)
+                    if (env.optString("event") != "message") continue
+                    val msg = env.optString("message", "")
+                    if (msg.isBlank()) continue
+                    val payload = JSONObject(msg)
+                    if (payload.optString("action") == "FILE_CHUNK") {
+                        val attId = payload.optLong("attId", 0L)
+                        if (attId <= 0L) continue
+                        val idx = payload.optInt("idx", 0)
+                        val total = payload.optInt("total", 1)
+                        val chunk = payload.optString("chunk", "")
+                        val map = cloudBlobChunks.getOrPut(attId) { mutableMapOf() }
+                        map[idx] = chunk
+                        cloudBlobTotals[attId] = total
+                        if (map.size >= total) {
+                            val sb = StringBuilder()
+                            for (i in 0 until total) {
+                                sb.append(map[i] ?: "")
+                            }
+                            val full = sb.toString()
+                            if (full.startsWith("data:")) {
+                                cloudBlobComplete[attId] = full
+                            }
+                        }
+                    }
+                } catch (_: Exception) {}
+            }
+        } catch (_: Exception) {}
+    }
 
     suspend fun pushUpsert(
         notice: NoticeEntity,
@@ -37,12 +209,15 @@ object CloudNoticeSync {
         try {
             val attArray = JSONArray()
             attachments.forEach { att ->
+                val attId = if (att.id > 0) att.id else System.currentTimeMillis()
+                val remoteUrl = uploadAttachmentBinaryAndChunks(att, attId)
                 val attJson = JSONObject().apply {
-                    put("id", if (att.id > 0) att.id else System.currentTimeMillis())
+                    put("id", attId)
                     put("filename", att.originalFilename)
                     put("fileType", att.fileType)
                     put("size", att.fileSizeBytes)
-                    put("previewText", att.previewSnippet)
+                    put("remoteUrl", remoteUrl)
+                    put("previewText", att.previewSnippet.take(280))
                 }
                 attArray.put(attJson)
             }
@@ -107,9 +282,32 @@ object CloudNoticeSync {
         }
     }
 
+    suspend fun pushPasswordReset(loginId: String, newPasswordPlain: String): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val payload = JSONObject().apply {
+                put("action", "PASSWORD_RESET")
+                put("loginId", loginId.trim())
+                put("newPassword", newPasswordPlain)
+                put("ts", System.currentTimeMillis())
+            }
+            val body = payload.toString().toRequestBody("text/plain; charset=utf-8".toMediaType())
+            val req = Request.Builder()
+                .url(BASE_URL)
+                .post(body)
+                .build()
+            client.newCall(req).execute().use { resp ->
+                resp.isSuccessful
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     suspend fun pullAndApplyRemoteNotices(repository: NoticeBoardRepository): Int = withContext(Dispatchers.IO) {
         var appliedCount = 0
         try {
+            pullCloudBlobs()
+
             val req = Request.Builder()
                 .url("$BASE_URL/json?poll=1&since=24h")
                 .get()
@@ -127,7 +325,18 @@ object CloudNoticeSync {
                 try {
                     val envelope = JSONObject(line)
                     if (envelope.optString("event") != "message") continue
-                    val msgStr = envelope.optString("message", "")
+                    var msgStr = envelope.optString("message", "")
+                    val attObj = envelope.optJSONObject("attachment")
+                    if (attObj != null && attObj.optString("url").isNotBlank()) {
+                        try {
+                            val attReq = Request.Builder().url(attObj.optString("url")).get().build()
+                            client.newCall(attReq).execute().use { r ->
+                                if (r.isSuccessful) {
+                                    msgStr = r.body?.string() ?: msgStr
+                                }
+                            }
+                        } catch (_: Exception) {}
+                    }
                     if (msgStr.isBlank()) continue
 
                     val payload = JSONObject(msgStr)
@@ -139,6 +348,12 @@ object CloudNoticeSync {
                             deletedIds.add(noticeId)
                             repository.deleteNoticeById(noticeId)
                             appliedCount++
+                        }
+                    } else if (action == "PASSWORD_RESET") {
+                        val loginId = payload.optString("loginId", "").trim()
+                        val newPass = payload.optString("newPassword", "")
+                        if (loginId.isNotEmpty() && newPass.isNotEmpty()) {
+                            repository.resetPassword(loginId, newPass)
                         }
                     } else if (action == "UPSERT") {
                         val nObj = payload.optJSONObject("notice") ?: continue
@@ -185,17 +400,33 @@ object CloudNoticeSync {
                                 val aObj = attArr.optJSONObject(i) ?: continue
                                 val attId = aObj.optLong("id", rawId * 100 + i + 1)
                                 val filename = aObj.optString("filename", "Circular.pdf")
+                                val safeStoredName = "${attId}_${filename.replace(Regex("[^a-zA-Z0-9._-]"), "_")}"
                                 val fileType = aObj.optString("fileType", "PDF")
                                 val size = aObj.optLong("size", 102400L)
                                 val preview = aObj.optString("previewText", "Official GCE Salem Circular")
+                                val remoteUrl = aObj.optString("remoteUrl", "")
+                                val inlineDataUrl = aObj.optString("dataUrl", "")
                                 val uploadedBy = nObj.optString("authorLoginId", "principal")
+
+                                val dir = attachmentsDir
+                                val targetFile = if (dir != null) File(dir, safeStoredName) else null
+                                if (targetFile != null && !targetFile.exists()) {
+                                    val blobDataUrl = cloudBlobComplete[attId] ?: inlineDataUrl
+                                    var saved = false
+                                    if (blobDataUrl.isNotBlank()) {
+                                        saved = saveDataUrlToLocalFile(blobDataUrl, safeStoredName)
+                                    }
+                                    if (!saved && remoteUrl.isNotBlank()) {
+                                        downloadRemoteUrlToLocalFile(remoteUrl, safeStoredName)
+                                    }
+                                }
 
                                 repository.insertAttachment(
                                     AttachmentEntity(
                                         id = attId,
                                         noticeId = rawId,
                                         originalFilename = filename,
-                                        storedFilename = filename,
+                                        storedFilename = safeStoredName,
                                         fileType = fileType,
                                         fileSizeBytes = size,
                                         uploadedBy = uploadedBy,

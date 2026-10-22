@@ -151,23 +151,109 @@ def home(request: Request, db: Session = Depends(get_db), department: str = "ALL
     return templates.TemplateResponse(request=request, name="index.html", context={"user": user, "notices": notices, "departments": departments, "department": department, "category": category, "q": q, "csrf_token": request.session["csrf_token"], "categories": ["General", "Examination", "Events", "Placements", "Academic", "Circular", "Sports", "Other"], "now": utcnow()})
 
 @app.get("/login", response_class=HTMLResponse)
-def login_page(request: Request):
+def login_page(request: Request, mode: str = "signin"):
+    import secrets
     if "csrf_token" not in request.session:
-        import secrets
         request.session["csrf_token"] = secrets.token_urlsafe(32)
-    return templates.TemplateResponse(request=request, name="login.html", context={"request": request, "csrf_token": request.session["csrf_token"], "error": None})
+    captcha_code = "".join(secrets.choice("ABCDEFGHJKLMNPQRSTUVWXYZ23456789") for _ in range(6))
+    request.session["captcha_code"] = captcha_code
+    return templates.TemplateResponse(
+        request=request,
+        name="login.html",
+        context={
+            "request": request,
+            "csrf_token": request.session["csrf_token"],
+            "error": None,
+            "success": None,
+            "mode": mode,
+            "captcha_code": captcha_code,
+            "prefill_login_id": "",
+        },
+    )
 
 @app.post("/login")
 def login_form(request: Request, login_id: str = Form(...), password: str = Form(...), csrf_token: str = Form(...), db: Session = Depends(get_db)):
     csrf_ok(request, csrf_token)
     user = db.query(User).filter_by(login_id=login_id.strip(), is_active=True).first()
     if not user or not verify_password(password, user.password_hash):
-        return templates.TemplateResponse(request=request, name="login.html", context={"request": request, "csrf_token": request.session["csrf_token"], "error": "Invalid login ID or password."}, status_code=400)
+        return templates.TemplateResponse(request=request, name="login.html", context={"request": request, "csrf_token": request.session["csrf_token"], "error": "Invalid login ID or password.", "success": None, "mode": "signin", "prefill_login_id": login_id.strip()}, status_code=400)
     request.session.clear()
     import secrets
     request.session["login_id"] = user.login_id
     request.session["csrf_token"] = secrets.token_urlsafe(32)
     return RedirectResponse("/", status_code=303)
+
+@app.post("/forgot-password", response_class=HTMLResponse)
+def forgot_password_form(
+    request: Request,
+    login_id: str = Form(...),
+    captcha_input: str = Form(...),
+    captcha_expected: str = Form(""),
+    new_password: str = Form(...),
+    confirm_password: str = Form(...),
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    csrf_ok(request, csrf_token)
+    expected = (captcha_expected or request.session.get("captcha_code") or "").strip().upper()
+    entered = captcha_input.strip().upper()
+    if not entered or not expected or entered != expected:
+        return templates.TemplateResponse(
+            request=request,
+            name="login.html",
+            context={
+                "request": request,
+                "csrf_token": request.session["csrf_token"],
+                "error": "Incorrect CAPTCHA code. Please enter the new security code shown.",
+                "success": None,
+                "mode": "forgot",
+                "prefill_login_id": login_id.strip(),
+            },
+            status_code=400,
+        )
+    user = db.query(User).filter_by(login_id=login_id.strip().lower()).first() or db.query(User).filter_by(login_id=login_id.strip()).first()
+    if not user or not user.is_active:
+        return templates.TemplateResponse(
+            request=request,
+            name="login.html",
+            context={
+                "request": request,
+                "csrf_token": request.session["csrf_token"],
+                "error": "No active account found for that Login ID.",
+                "success": None,
+                "mode": "forgot",
+                "prefill_login_id": login_id.strip(),
+            },
+            status_code=400,
+        )
+    if len(new_password) < 4 or new_password != confirm_password:
+        return templates.TemplateResponse(
+            request=request,
+            name="login.html",
+            context={
+                "request": request,
+                "csrf_token": request.session["csrf_token"],
+                "error": "New passwords must match and be at least 4 characters long.",
+                "success": None,
+                "mode": "forgot",
+                "prefill_login_id": login_id.strip(),
+            },
+            status_code=400,
+        )
+    user.password_hash = hash_password(new_password)
+    db.commit()
+    return templates.TemplateResponse(
+        request=request,
+        name="login.html",
+        context={
+            "request": request,
+            "csrf_token": request.session["csrf_token"],
+            "error": None,
+            "success": f"Password reset successful for {user.login_id}. Please sign in with your new password.",
+            "mode": "signin",
+            "prefill_login_id": user.login_id,
+        },
+    )
 
 @app.post("/logout")
 def logout(request: Request, csrf_token: str = Form(...)):
@@ -237,7 +323,7 @@ def delete_notice_form(notice_id: int, request: Request, csrf_token: str = Form(
     return RedirectResponse("/?deleted=1", status_code=303)
 
 @app.get("/attachments/{attachment_id}")
-def download_attachment(attachment_id: int, request: Request, db: Session = Depends(get_db)):
+def download_attachment(attachment_id: int, request: Request, inline: int = 0, db: Session = Depends(get_db)):
     user = current_user(request, db)
     attachment = db.query(Attachment).options(joinedload(Attachment.notice)).filter_by(id=attachment_id).first()
     if not attachment: raise HTTPException(status_code=404, detail="Attachment not found")
@@ -250,7 +336,8 @@ def download_attachment(attachment_id: int, request: Request, db: Session = Depe
         if user.role in {"Faculty", "HOD"} and notice.department_id not in (None, user.department_id) and notice.author_id != user.id: raise HTTPException(status_code=403, detail="Not permitted")
     path = UPLOAD_DIR / attachment.stored_filename
     if not path.is_file(): raise HTTPException(status_code=404, detail="File is missing from storage")
-    return FileResponse(path, media_type=attachment.content_type, filename=attachment.original_filename, headers={"X-Content-Type-Options": "nosniff"})
+    disposition = "inline" if inline == 1 else "attachment"
+    return FileResponse(path, media_type=attachment.content_type, filename=attachment.original_filename, content_disposition_type=disposition, headers={"X-Content-Type-Options": "nosniff"})
 
 @app.post("/settings/theme")
 def save_theme(request: Request, accent_colour: str = Form("#155eef"), background_colour: str = Form("#f5f7fb"), font_family: str = Form("Inter"), theme_mode: str = Form("light"), csrf_token: str = Form(...), db: Session = Depends(get_db)):

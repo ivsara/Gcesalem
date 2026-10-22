@@ -172,6 +172,7 @@ class NoticeBoardViewModel(application: Application) : AndroidViewModel(applicat
     val userPreference: StateFlow<UserPreferenceEntity> = _userPreference.asStateFlow()
 
     init {
+        CloudNoticeSync.init(application)
         viewModelScope.launch(Dispatchers.IO) {
             AppDatabase.ensureSeeded(database)
             CloudNoticeSync.pullAndApplyRemoteNotices(repository)
@@ -210,7 +211,8 @@ class NoticeBoardViewModel(application: Application) : AndroidViewModel(applicat
             _authError.value = null
             val success = repository.resetPassword(loginId, newPasswordPlain)
             if (success) {
-                onResult(true, "Password reset successful for ${loginId.trim()}. Please sign in with your new password.")
+                CloudNoticeSync.pushPasswordReset(loginId.trim(), newPasswordPlain)
+                onResult(true, "✓ Password reset successful for ${loginId.trim()}. Please sign in with your new password.")
             } else {
                 onResult(false, "Account not found or inactive for Login ID '${loginId.trim()}'.")
             }
