@@ -7,6 +7,7 @@ import androidx.room.PrimaryKey
 
 enum class UserRole {
     ADMIN,
+    HOD,
     FACULTY,
     STUDENT
 }
@@ -53,8 +54,8 @@ data class UserEntity(
     val loginId: String,
     val passwordHash: String,
     val fullName: String,
-    val role: String, // ADMIN, FACULTY, STUDENT
-    val departmentCode: String, // e.g. CSE, IT, ECE, EEE, ME, CE, or ALL
+    val role: String, // ADMIN, HOD, FACULTY, STUDENT
+    val departmentCode: String, // CIVIL, MECH, ECE, EEE, CSE, METT, AIML, or ALL
     val email: String,
     val isActive: Boolean = true,
     val createdAt: Long = System.currentTimeMillis()
@@ -67,7 +68,7 @@ data class UserEntity(
 data class DepartmentEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val name: String,
-    val code: String, // CSE, IT, ECE, EEE, ME, CE
+    val code: String, // CIVIL, MECH, ECE, EEE, CSE, METT, AIML
     val description: String,
     val isActive: Boolean = true
 )

@@ -30,7 +30,6 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.data.model.UserRole
-import com.example.ui.screens.AcademicDocsScreen
 import com.example.ui.screens.AdminDashboardScreen
 import com.example.ui.screens.PublicNoticeScreen
 import com.example.ui.screens.ThemeSettingsScreen
@@ -69,7 +68,7 @@ class MainActivity : ComponentActivity() {
                             // Role-specific second navigation tab
                             val (roleTabLabel, roleTabIcon) = when (currentUser?.role) {
                                 UserRole.ADMIN.name -> "Admin Console" to Icons.Default.SupervisorAccount
-                                UserRole.FACULTY.name -> "Publish" to Icons.Default.Assignment
+                                UserRole.HOD.name, UserRole.FACULTY.name -> "Publish" to Icons.Default.Assignment
                                 else -> "Departments" to Icons.Default.Apartment
                             }
 
@@ -88,14 +87,6 @@ class MainActivity : ComponentActivity() {
                                 label = { Text("Theme", fontWeight = FontWeight.Medium) },
                                 modifier = Modifier.testTag("nav_theme")
                             )
-
-                            NavigationBarItem(
-                                selected = selectedTab == 3,
-                                onClick = { selectedTab = 3 },
-                                icon = { Icon(Icons.Default.MenuBook, contentDescription = "Viva & Docs") },
-                                label = { Text("Viva & Docs", fontWeight = FontWeight.Medium) },
-                                modifier = Modifier.testTag("nav_docs")
-                            )
                         }
                     }
                 ) { innerPadding ->
@@ -111,7 +102,6 @@ class MainActivity : ComponentActivity() {
                                     modifier = Modifier.padding(innerPadding)
                                 )
                             } else {
-                                // Filter by department / public view
                                 PublicNoticeScreen(
                                     viewModel = viewModel,
                                     modifier = Modifier.padding(innerPadding)
@@ -120,9 +110,6 @@ class MainActivity : ComponentActivity() {
                         }
                         2 -> ThemeSettingsScreen(
                             viewModel = viewModel,
-                            modifier = Modifier.padding(innerPadding)
-                        )
-                        3 -> AcademicDocsScreen(
                             modifier = Modifier.padding(innerPadding)
                         )
                     }

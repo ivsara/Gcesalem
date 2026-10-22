@@ -1,6 +1,8 @@
 (() => {
-  const STORAGE_KEY = 'gce_salem_notice_board_db_v1';
-  const SESSION_KEY = 'gce_salem_current_user_v1';
+  const STORAGE_KEY = 'gce_salem_notice_board_db_v4';
+  const SESSION_KEY = 'gce_salem_current_user_v4';
+  const CLOUD_SYNC_TOPIC = 'gce_salem_notice_board_sync_v4';
+  const CLOUD_SYNC_URL = `https://ntfy.sh/${CLOUD_SYNC_TOPIC}`;
 
   const escapeHtml = val =>
     String(val ?? '').replace(/[&<>"']/g, c => ({
@@ -18,69 +20,89 @@
     return 'data:text/plain;charset=utf-8,' + encodeURIComponent(content);
   }
 
+  const DEPT_LIST = [
+    { code: 'CIVIL', name: 'Civil Engineering', isActive: true },
+    { code: 'MECH', name: 'Mechanical Engineering', isActive: true },
+    { code: 'ECE', name: 'Electronics and Communication Engineering', isActive: true },
+    { code: 'EEE', name: 'Electrical and Electronics Engineering', isActive: true },
+    { code: 'CSE', name: 'Computer Science and Engineering', isActive: true },
+    { code: 'METT', name: 'Metallurgical Engineering', isActive: true },
+    { code: 'AIML', name: 'Artificial Intelligence and Machine Learning', isActive: true }
+  ];
+
+  function buildDefaultUsers() {
+    const users = [
+      {
+        loginId: 'principal',
+        password: 'principal123',
+        fullName: 'Admin Principal',
+        role: 'Administrator',
+        department: 'ALL',
+        isActive: true
+      },
+      {
+        loginId: 'admin',
+        password: 'admin123',
+        fullName: 'Admin Principal',
+        role: 'Administrator',
+        department: 'ALL',
+        isActive: true
+      }
+    ];
+
+    DEPT_LIST.forEach(d => {
+      const lower = d.code.toLowerCase();
+      // 1 HOD per department
+      users.push({
+        loginId: `hod_${lower}`,
+        password: 'hod123',
+        fullName: `HOD - ${d.code}`,
+        role: 'HOD',
+        department: d.code,
+        isActive: true
+      });
+      // 3 Faculty per department
+      for (let f = 1; f <= 3; f++) {
+        users.push({
+          loginId: `faculty_${lower}${f}`,
+          password: 'faculty123',
+          fullName: `Faculty ${f} - ${d.code}`,
+          role: 'Faculty',
+          department: d.code,
+          isActive: true
+        });
+      }
+      // 10 Students per department
+      for (let s = 1; s <= 10; s++) {
+        users.push({
+          loginId: `student_${lower}${s}`,
+          password: 'student123',
+          fullName: `Student ${s} - ${d.code}`,
+          role: 'Student',
+          department: d.code,
+          isActive: true
+        });
+      }
+    });
+
+    return users;
+  }
+
   function defaultDatabase() {
     const now = nowMs();
     return {
-      departments: [
-        { code: 'CSE', name: 'Computer Science and Engineering', isActive: true },
-        { code: 'IT', name: 'Information Technology', isActive: true },
-        { code: 'ECE', name: 'Electronics and Communication Engineering', isActive: true },
-        { code: 'EEE', name: 'Electrical and Electronics Engineering', isActive: true },
-        { code: 'ME', name: 'Mechanical Engineering', isActive: true },
-        { code: 'CE', name: 'Civil Engineering', isActive: true }
-      ],
-      users: [
-        {
-          loginId: 'admin',
-          password: 'admin123',
-          fullName: 'Dr. R. Vijayakumar (Principal & Admin)',
-          role: 'Administrator',
-          department: 'ALL',
-          isActive: true
-        },
-        {
-          loginId: 'faculty_cse',
-          password: 'faculty123',
-          fullName: 'Prof. K. Sundararajan (HOD CSE)',
-          role: 'Faculty',
-          department: 'CSE',
-          isActive: true
-        },
-        {
-          loginId: 'faculty_ece',
-          password: 'faculty123',
-          fullName: 'Dr. M. Geetha (Associate Prof. ECE)',
-          role: 'Faculty',
-          department: 'ECE',
-          isActive: true
-        },
-        {
-          loginId: 'student_cse',
-          password: 'student123',
-          fullName: 'Elango S. (Reg: 737722104012)',
-          role: 'Student',
-          department: 'CSE',
-          isActive: true
-        },
-        {
-          loginId: 'student_it',
-          password: 'student123',
-          fullName: 'Priya Dharshini K. (Reg: 737722105028)',
-          role: 'Student',
-          department: 'IT',
-          isActive: true
-        }
-      ],
+      departments: DEPT_LIST.map(d => ({ ...d })),
+      users: buildDefaultUsers(),
       notices: [
         {
           id: 101,
           title: 'End Semester Examination Schedule — Nov/Dec 2026 (Autonomous)',
-          description: 'Controller of Examinations (Autonomous) announces the official timetable for 3rd, 5th, and 7th Semester B.E. Degree Examinations. Hall tickets will be issued through respective department offices. Students must carry their College ID card and hall ticket to all sessions.',
+          description: 'Controller of Examinations (Autonomous) announces the official timetable for 3rd, 5th, and 7th Semester B.E. Degree Examinations across CIVIL, MECH, ECE, EEE, CSE, METT, and AIML. Hall tickets will be issued through respective department offices.',
           department: 'ALL',
           category: 'Examination',
           priority: 'HIGH',
-          authorLoginId: 'admin',
-          authorName: 'Dr. R. Vijayakumar (Principal & Admin)',
+          authorLoginId: 'principal',
+          authorName: 'Admin Principal',
           publishedAt: now - 2 * dayMs,
           expiresAt: now + 30 * dayMs,
           isPinned: true,
@@ -91,7 +113,7 @@
               filename: 'GCE_Salem_End_Sem_Timetable_NovDec2026.pdf',
               fileType: 'PDF',
               size: 1420500,
-              previewText: 'CONTROLLER OF EXAMINATIONS — GCE SALEM (AUTONOMOUS)\nForenoon Session: 09:30 AM – 12:30 PM\nAfternoon Session: 01:30 PM – 04:30 PM\nAll departments (CSE, IT, ECE, EEE, ME, CE) theory examinations commence from 16-Nov-2026.',
+              previewText: 'CONTROLLER OF EXAMINATIONS — GCE SALEM (AUTONOMOUS)\nForenoon Session: 09:30 AM – 12:30 PM\nAfternoon Session: 01:30 PM – 04:30 PM\nAll departments (CIVIL, MECH, ECE, EEE, CSE, METT, AIML) theory examinations commence from 16-Nov-2026.',
               dataUrl: createSampleDataUrl('GCE_Salem_End_Sem_Timetable_NovDec2026.pdf', 'GCE SALEM OFFICIAL EXAMINATION TIMETABLE NOV/DEC 2026')
             }
           ]
@@ -99,12 +121,12 @@
         {
           id: 102,
           title: 'Mega Campus Placement Drive 2026: Zoho, TCS & Caterpillar',
-          description: 'Training & Placement Cell invites eligible Final Year B.E. students (CSE, IT, ECE, EEE, ME, CE) with 6.5+ CGPA and no standing arrears. Aptitude and coding assessments start Monday at 9:00 AM in the Central Computing Centre.',
+          description: 'Training & Placement Cell invites eligible Final Year B.E. students (CIVIL, MECH, ECE, EEE, CSE, METT, AIML) with 6.5+ CGPA and no standing arrears. Aptitude and coding assessments start Monday at 9:00 AM in the Central Computing Centre.',
           department: 'ALL',
           category: 'Placements',
           priority: 'HIGH',
-          authorLoginId: 'admin',
-          authorName: 'Dr. R. Vijayakumar (Principal & Admin)',
+          authorLoginId: 'principal',
+          authorName: 'Admin Principal',
           publishedAt: now - 1 * dayMs,
           expiresAt: now + 15 * dayMs,
           isPinned: true,
@@ -115,20 +137,20 @@
               filename: 'Eligible_Students_Placement_Drive_2026.xlsx',
               fileType: 'XLS',
               size: 582400,
-              previewText: 'Shortlisted Candidates: 342 Final Year Students across CSE, IT, ECE, EEE, ME, CE.\nVenue: Central Computing Centre Lab 1 & 2.',
-              dataUrl: createSampleDataUrl('Eligible_Students_Placement_Drive_2026.xlsx', 'RegNo,Name,Department,CGPA,Slot\n737722104012,Elango S,CSE,8.7,Batch-1')
+              previewText: 'Shortlisted Candidates across CIVIL, MECH, ECE, EEE, CSE, METT, AIML.\nVenue: Central Computing Centre Lab 1 & 2.',
+              dataUrl: createSampleDataUrl('Eligible_Students_Placement_Drive_2026.xlsx', 'RegNo,Role,Department,CGPA,Slot\n737722104001,Student 1 - CSE,CSE,8.7,Batch-1')
             }
           ]
         },
         {
           id: 103,
           title: 'Smart India Hackathon (SIH 2026) — Internal College Evaluation',
-          description: 'Department of CSE is organizing the Internal SIH 2026 Hackathon on Saturday at Seminar Hall 1. Teams of 6 members must submit their prototype presentation deck before Friday 5:00 PM.',
+          description: 'Department of CSE and AIML are organizing the Internal SIH 2026 Hackathon on Saturday at Seminar Hall 1. Teams of 6 members must submit their prototype presentation deck before Friday 5:00 PM.',
           department: 'CSE',
           category: 'Events',
           priority: 'HIGH',
-          authorLoginId: 'faculty_cse',
-          authorName: 'Prof. K. Sundararajan (HOD CSE)',
+          authorLoginId: 'hod_cse',
+          authorName: 'HOD - CSE',
           publishedAt: now - 6 * 3600 * 1000,
           expiresAt: now + 10 * dayMs,
           isPinned: false,
@@ -151,8 +173,8 @@
           department: 'CSE',
           category: 'Department Circulars',
           priority: 'MEDIUM',
-          authorLoginId: 'faculty_cse',
-          authorName: 'Prof. K. Sundararajan (HOD CSE)',
+          authorLoginId: 'faculty_cse1',
+          authorName: 'Faculty 1 - CSE',
           publishedAt: now - 12 * 3600 * 1000,
           expiresAt: now + 12 * dayMs,
           isPinned: false,
@@ -163,7 +185,7 @@
               filename: 'CSE_Model_Lab_Batches_2026.docx',
               fileType: 'DOC',
               size: 345000,
-              previewText: 'Batch A: Reg 737722104001 – 737722104030 (09:00 AM)\nBatch B: Reg 737722104031 – 737722104060 (01:30 PM)\nObservation notebook and Lab Coat mandatory.',
+              previewText: 'Batch A: Student 1 - CSE to Student 5 - CSE (09:00 AM)\nBatch B: Student 6 - CSE to Student 10 - CSE (01:30 PM)\nObservation notebook and Lab Coat mandatory.',
               dataUrl: createSampleDataUrl('CSE_Model_Lab_Batches_2026.docx', 'CSE Model Lab Schedule - Batch A & Batch B')
             }
           ]
@@ -175,30 +197,16 @@
           department: 'ECE',
           category: 'Department Circulars',
           priority: 'MEDIUM',
-          authorLoginId: 'faculty_ece',
-          authorName: 'Dr. M. Geetha (Associate Prof. ECE)',
+          authorLoginId: 'hod_ece',
+          authorName: 'HOD - ECE',
           publishedAt: now - 18 * 3600 * 1000,
           expiresAt: now + 9 * dayMs,
           isPinned: false,
           visibility: 'RESTRICTED',
           attachments: []
-        },
-        {
-          id: 106,
-          title: 'Notice: Odd Semester Tuition Fee Payment (Without Fine) — Archived',
-          description: 'Students are instructed to pay odd semester tuition fees via State Bank Collect portal before the due date.',
-          department: 'ALL',
-          category: 'Important Announcements',
-          priority: 'MEDIUM',
-          authorLoginId: 'admin',
-          authorName: 'Dr. R. Vijayakumar (Principal & Admin)',
-          publishedAt: now - 20 * dayMs,
-          expiresAt: now - 3 * dayMs, // Expired 3 days ago
-          isPinned: false,
-          visibility: 'PUBLIC',
-          attachments: []
         }
       ],
+      deletedIds: [],
       preferences: {}
     };
   }
@@ -211,7 +219,9 @@
         localStorage.setItem(STORAGE_KEY, JSON.stringify(initial));
         return initial;
       }
-      return JSON.parse(raw);
+      const parsed = JSON.parse(raw);
+      parsed.deletedIds = parsed.deletedIds || [];
+      return parsed;
     } catch (_) {
       return defaultDatabase();
     }
@@ -249,6 +259,7 @@
   const statRoleEl = document.getElementById('stat-role');
   const accessSubtitleEl = document.getElementById('access-subtitle');
   const lastSyncTimeEl = document.getElementById('last-sync-time');
+  const syncStatusTextEl = document.getElementById('sync-status-text');
 
   const navPublishEl = document.getElementById('nav-publish');
   const navAdminEl = document.getElementById('nav-admin');
@@ -302,6 +313,10 @@
     'Important Announcements': '⚑'
   };
 
+  function isPublisherRole(role) {
+    return role === 'Administrator' || role === 'HOD' || role === 'Faculty';
+  }
+
   function formatDate(ms) {
     if (!ms) return '';
     return new Date(ms).toLocaleDateString('en-GB', {
@@ -310,6 +325,136 @@
       year: 'numeric'
     });
   }
+
+  // ---------------- CLOUD SYNC ACROSS PHONES ----------------
+
+  function applyCloudPayload(payload) {
+    if (!payload || !payload.action) return false;
+    db.deletedIds = db.deletedIds || [];
+
+    if (payload.action === 'DELETE' && payload.noticeId) {
+      const id = Number(payload.noticeId);
+      if (!db.deletedIds.includes(id)) db.deletedIds.push(id);
+      const beforeLen = db.notices.length;
+      db.notices = db.notices.filter(n => Number(n.id) !== id);
+      return db.notices.length !== beforeLen;
+    }
+
+    if (payload.action === 'UPSERT' && payload.notice) {
+      const incoming = payload.notice;
+      const id = Number(incoming.id);
+      if (db.deletedIds.includes(id)) return false;
+
+      const idx = db.notices.findIndex(n => Number(n.id) === id);
+      const normalized = {
+        id,
+        title: String(incoming.title || ''),
+        description: String(incoming.description || ''),
+        department: String(incoming.department || 'ALL'),
+        category: String(incoming.category || 'General'),
+        priority: String(incoming.priority || 'MEDIUM'),
+        authorLoginId: String(incoming.authorLoginId || 'principal'),
+        authorName: String(incoming.authorName || 'Admin Principal'),
+        publishedAt: Number(incoming.publishedAt || nowMs()),
+        expiresAt: Number(incoming.expiresAt || 0),
+        isPinned: Boolean(incoming.isPinned),
+        visibility: String(incoming.visibility || 'PUBLIC'),
+        attachments: (incoming.attachments || []).map(a => ({
+          id: Number(a.id || Date.now()),
+          filename: String(a.filename || 'Circular.pdf'),
+          fileType: String(a.fileType || 'PDF'),
+          size: Number(a.size || 102400),
+          previewText: String(a.previewText || 'Official GCE Salem Circular'),
+          dataUrl: a.dataUrl || createSampleDataUrl(a.filename || 'Circular.pdf', a.previewText || a.filename || 'GCE Salem Circular')
+        }))
+      };
+
+      if (idx === -1) {
+        db.notices.unshift(normalized);
+        return true;
+      } else {
+        // Keep local dataUrl if already present
+        const existingAtts = db.notices[idx].attachments || [];
+        if (existingAtts.length && (!normalized.attachments || !normalized.attachments.length)) {
+          normalized.attachments = existingAtts;
+        }
+        db.notices[idx] = normalized;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  async function publishCloudEvent(eventObj) {
+    try {
+      const compactEvent = JSON.parse(JSON.stringify(eventObj));
+      if (compactEvent.notice && compactEvent.notice.attachments) {
+        compactEvent.notice.attachments = compactEvent.notice.attachments.map(a => ({
+          id: a.id,
+          filename: a.filename,
+          fileType: a.fileType,
+          size: a.size,
+          previewText: String(a.previewText || '').slice(0, 240)
+        }));
+      }
+      await fetch(CLOUD_SYNC_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify(compactEvent)
+      });
+    } catch (_) {}
+  }
+
+  async function syncFromCloud() {
+    try {
+      if (syncStatusTextEl) syncStatusTextEl.textContent = 'Syncing notices…';
+      const resp = await fetch(`${CLOUD_SYNC_URL}/json?poll=1&since=24h&_t=${Date.now()}`, {
+        cache: 'no-store'
+      });
+      if (!resp.ok) throw new Error('Sync status ' + resp.status);
+      const text = await resp.text();
+      const lines = text.trim().split('\n').filter(Boolean);
+      let changed = false;
+      for (const line of lines) {
+        try {
+          const env = JSON.parse(line);
+          if (env.event === 'message' && env.message) {
+            const payload = JSON.parse(env.message);
+            if (applyCloudPayload(payload)) changed = true;
+          }
+        } catch (_) {}
+      }
+      if (changed) {
+        saveDb(db);
+      }
+      renderNotices();
+      if (syncStatusTextEl) syncStatusTextEl.textContent = 'Cloud sync active';
+    } catch (_) {
+      renderNotices();
+      if (syncStatusTextEl) syncStatusTextEl.textContent = 'Local + Cloud ready';
+    }
+  }
+
+  function startRealtimeStream() {
+    if (typeof EventSource === 'undefined') return;
+    try {
+      const es = new EventSource(`${CLOUD_SYNC_URL}/sse`);
+      es.onmessage = ev => {
+        try {
+          const env = JSON.parse(ev.data);
+          if (env.event === 'message' && env.message) {
+            const payload = JSON.parse(env.message);
+            if (applyCloudPayload(payload)) {
+              saveDb(db);
+              renderNotices();
+            }
+          }
+        } catch (_) {}
+      };
+    } catch (_) {}
+  }
+
+  // ---------------- THEME & DISPLAY ----------------
 
   function applyThemePreferences() {
     const key = currentUser ? currentUser.loginId : 'guest';
@@ -353,6 +498,8 @@
     renderNotices();
   }
 
+  // ---------------- PERMISSIONS & FILTERING ----------------
+
   function canUserViewNotice(user, n, now) {
     const isExpired = n.expiresAt && n.expiresAt > 0 && n.expiresAt < now;
     if (showExpired && user && user.role === 'Administrator') {
@@ -367,7 +514,7 @@
     if (user.role === 'Student') {
       return n.visibility === 'PUBLIC' || n.department === 'ALL' || n.department === user.department;
     }
-    if (user.role === 'Faculty') {
+    if (user.role === 'Faculty' || user.role === 'HOD') {
       return (
         n.visibility === 'PUBLIC' ||
         n.department === 'ALL' ||
@@ -375,7 +522,7 @@
         n.authorLoginId === user.loginId
       );
     }
-    return true; // Administrator
+    return true; // Administrator (Admin Principal)
   }
 
   function getFilteredNotices() {
@@ -445,7 +592,7 @@
         noticeDeptSelect.innerHTML =
           `<option value="ALL">College-wide (All Departments)</option>` +
           activeDepts.map(d => `<option value="${escapeHtml(d.code)}">${escapeHtml(d.code)} — ${escapeHtml(d.name)}</option>`).join('');
-      } else if (currentUser.role === 'Faculty') {
+      } else if (currentUser.role === 'Faculty' || currentUser.role === 'HOD') {
         noticeDeptSelect.innerHTML = activeDepts
           .filter(d => d.code === currentUser.department)
           .map(d => `<option value="${escapeHtml(d.code)}">${escapeHtml(d.code)} — ${escapeHtml(d.name)}</option>`)
@@ -453,23 +600,22 @@
       }
     }
 
-    // Admin New User Dept Select
+    // Admin New User Dept Select & Filter
     const newUserDept = document.getElementById('new-user-dept');
     if (newUserDept) {
       newUserDept.innerHTML =
         `<option value="ALL">ALL</option>` +
         activeDepts.map(d => `<option value="${escapeHtml(d.code)}">${escapeHtml(d.code)}</option>`).join('');
     }
+    const adminUserFilter = document.getElementById('admin-user-dept-filter');
+    if (adminUserFilter && adminUserFilter.options.length <= 1) {
+      adminUserFilter.innerHTML =
+        `<option value="ALL">All Departments</option>` +
+        activeDepts.map(d => `<option value="${escapeHtml(d.code)}">${escapeHtml(d.code)}</option>`).join('');
+    }
   }
 
   function renderAuthUI() {
-    // Role switcher active state
-    document.querySelectorAll('#role-switcher-pills .role-pill').forEach(btn => {
-      const targetUser = btn.getAttribute('data-demo-user') || '';
-      const currentId = currentUser ? currentUser.loginId : '';
-      btn.classList.toggle('active', targetUser === currentId);
-    });
-
     if (!currentUser) {
       userChipContainerEl.classList.add('hidden');
       btnOpenLogin.classList.remove('hidden');
@@ -481,7 +627,7 @@
       expiredToggleWrapEl.classList.add('hidden');
       statRoleEl.textContent = 'Guest';
       accessSubtitleEl.textContent =
-        'Showing public college announcements. Sign in or use the Role Switcher above to view restricted department circulars.';
+        'Showing public college announcements. Sign in to view restricted department circulars.';
     } else {
       userChipContainerEl.classList.remove('hidden');
       userAvatarEl.textContent = currentUser.fullName.charAt(0).toUpperCase();
@@ -489,12 +635,12 @@
       userRoleDeptEl.textContent = `${currentUser.role} · ${currentUser.department}`;
       btnOpenLogin.classList.add('hidden');
       btnLogout.classList.remove('hidden');
-      statRoleEl.textContent = currentUser.role;
+      statRoleEl.textContent = currentUser.fullName;
 
-      const canPublish = currentUser.role === 'Administrator' || currentUser.role === 'Faculty';
+      const canPublish = isPublisherRole(currentUser.role);
       navPublishEl.classList.toggle('hidden', !canPublish);
       publishSectionEl.classList.toggle('hidden', !canPublish);
-      document.getElementById('publish-role-badge').textContent = `${currentUser.role} (${currentUser.department})`;
+      document.getElementById('publish-role-badge').textContent = `${currentUser.fullName}`;
       document.getElementById('pin-field-wrap').classList.toggle('hidden', currentUser.role !== 'Administrator');
 
       const isAdmin = currentUser.role === 'Administrator';
@@ -505,7 +651,7 @@
       accessSubtitleEl.textContent =
         currentUser.role === 'Student'
           ? `Signed in as ${currentUser.fullName}. Showing college-wide announcements and ${currentUser.department} department circulars.`
-          : `Signed in as ${currentUser.fullName} (${currentUser.role}).`;
+          : `Signed in as ${currentUser.fullName}.`;
     }
 
     renderDepartmentOptions();
@@ -546,6 +692,7 @@
         const canManage =
           currentUser &&
           (currentUser.role === 'Administrator' ||
+            (currentUser.role === 'HOD' && n.department === currentUser.department) ||
             (currentUser.role === 'Faculty' && n.authorLoginId === currentUser.loginId));
 
         const cls =
@@ -592,7 +739,7 @@
               ${attachmentsHtml ? `<div class="attachments">${attachmentsHtml}</div>` : ''}
               <div class="notice-foot">
                 <span class="department-tag">${n.department === 'ALL' ? 'COLLEGE-WIDE' : 'DEPT: ' + escapeHtml(n.department)}</span>
-                <span>Published by ${escapeHtml(n.authorName || 'Administration')}</span>
+                <span>Published by ${escapeHtml(n.authorName || 'Admin Principal')}</span>
                 ${n.expiresAt ? `<span>· Valid until ${escapeHtml(formatDate(n.expiresAt))}</span>` : ''}
               </div>
             </div>
@@ -605,21 +752,29 @@
   function renderAdminPanel() {
     const userListEl = document.getElementById('admin-user-list');
     const deptListEl = document.getElementById('admin-dept-list');
+    const countEl = document.getElementById('admin-user-count');
+    const deptFilterEl = document.getElementById('admin-user-dept-filter');
     if (!userListEl || !deptListEl) return;
 
-    userListEl.innerHTML = db.users
+    const filterVal = deptFilterEl ? deptFilterEl.value : 'ALL';
+    const filteredUsers = db.users.filter(
+      u => filterVal === 'ALL' || u.department === filterVal
+    );
+    if (countEl) countEl.textContent = filteredUsers.length;
+
+    userListEl.innerHTML = filteredUsers
       .map(
         u => `
         <div class="table-row">
           <div>
-            <b>${escapeHtml(u.fullName)}</b> <small>(${escapeHtml(u.loginId)})</small><br>
-            <span style="font-size:11px;color:#667085;">${escapeHtml(u.role)} · Dept: ${escapeHtml(u.department)} · ${u.isActive ? 'Active' : 'Deactivated'}</span>
+            <b>${escapeHtml(u.fullName)}</b> <small>(ID: <code>${escapeHtml(u.loginId)}</code>)</small><br>
+            <span style="font-size:11px;color:#667085;">Role: ${escapeHtml(u.role)} · Dept: ${escapeHtml(u.department)} · ${u.isActive ? 'Active' : 'Deactivated'}</span>
           </div>
           <div style="display:flex;gap:6px;">
             ${
-              u.loginId !== 'admin'
+              u.loginId !== 'principal' && u.loginId !== 'admin'
                 ? `<button type="button" class="role-pill" data-toggle-user="${escapeHtml(u.loginId)}">${u.isActive ? 'Deactivate' : 'Activate'}</button>`
-                : '<span class="demo-badge">Primary Admin</span>'
+                : '<span class="demo-badge">Admin Principal</span>'
             }
           </div>
         </div>`
@@ -639,6 +794,11 @@
       .join('');
   }
 
+  const adminDeptFilterEl = document.getElementById('admin-user-dept-filter');
+  if (adminDeptFilterEl) {
+    adminDeptFilterEl.addEventListener('change', renderAdminPanel);
+  }
+
   function resetFilters() {
     selectedDept = 'ALL';
     selectedCategory = 'ALL';
@@ -653,24 +813,6 @@
     renderDepartmentOptions();
     renderNotices();
   }
-
-  // Event Listeners: Role Switcher Bar
-  document.getElementById('role-switcher-pills').addEventListener('click', e => {
-    const btn = e.target.closest('[data-demo-user]');
-    if (!btn) return;
-    const loginId = btn.getAttribute('data-demo-user');
-    if (!loginId) {
-      currentUser = null;
-      localStorage.removeItem(SESSION_KEY);
-    } else {
-      const found = db.users.find(u => u.loginId === loginId && u.isActive);
-      if (found) {
-        currentUser = found;
-        localStorage.setItem(SESSION_KEY, found.loginId);
-      }
-    }
-    renderAuthUI();
-  });
 
   // Event Listeners: Department Quick Tabs
   deptQuickTabsEl.addEventListener('click', e => {
@@ -708,12 +850,17 @@
   }
   document.getElementById('btn-clear-filters').addEventListener('click', resetFilters);
   document.getElementById('btn-manual-refresh').addEventListener('click', () => {
-    db = loadDb();
-    renderNotices();
+    syncFromCloud();
   });
+  const btnSectionRefresh = document.getElementById('btn-section-refresh');
+  if (btnSectionRefresh) {
+    btnSectionRefresh.addEventListener('click', () => {
+      syncFromCloud();
+    });
+  }
 
   // Notice Card Actions (Attachment Preview, Edit, Delete)
-  noticeListEl.addEventListener('click', e => {
+  noticeListEl.addEventListener('click', async e => {
     const previewBtn = e.target.closest('[data-preview-notice]');
     if (previewBtn) {
       const noticeId = Number(previewBtn.getAttribute('data-preview-notice'));
@@ -748,9 +895,12 @@
     if (deleteBtn) {
       const id = Number(deleteBtn.getAttribute('data-delete-id'));
       if (!window.confirm('Delete this notice and its attachments permanently?')) return;
-      db.notices = db.notices.filter(item => item.id !== id);
+      db.deletedIds = db.deletedIds || [];
+      if (!db.deletedIds.includes(id)) db.deletedIds.push(id);
+      db.notices = db.notices.filter(item => Number(item.id) !== id);
       saveDb(db);
       renderNotices();
+      await publishCloudEvent({ action: 'DELETE', noticeId: id });
     }
   });
 
@@ -762,11 +912,11 @@
     btnCancelEdit.classList.add('hidden');
   });
 
-  // Publish or Update Notice
+  // Publish or Update Notice (with immediate Cloud Sync so other phones receive it on refresh)
   noticeForm.addEventListener('submit', async e => {
     e.preventDefault();
-    if (!currentUser || (currentUser.role !== 'Administrator' && currentUser.role !== 'Faculty')) {
-      window.alert('Only authorized Administrators and Faculty can publish notices.');
+    if (!currentUser || !isPublisherRole(currentUser.role)) {
+      window.alert('Only authorized Admin Principal, HOD, and Faculty accounts can publish notices.');
       return;
     }
 
@@ -775,7 +925,7 @@
     if (!title || !description) return;
 
     const dept =
-      currentUser.role === 'Faculty' ? currentUser.department : noticeDeptSelect.value || 'ALL';
+      currentUser.role === 'Administrator' ? noticeDeptSelect.value || 'ALL' : currentUser.department;
 
     const files = Array.from(noticeFilesInput.files || []);
     const uploadedAttachments = [];
@@ -796,16 +946,17 @@
         filename: file.name,
         fileType: ['JPG', 'JPEG', 'PNG'].includes(ext) ? 'IMAGE' : ext,
         size: file.size,
-        previewText: `Uploaded file: ${file.name} (${(file.size / 1024).toFixed(1)} KB)`,
+        previewText: `Attached Circular: ${file.name} (${(file.size / 1024).toFixed(1)} KB)`,
         dataUrl
       });
     }
 
     const expiryVal = noticeExpiryInput.value ? new Date(noticeExpiryInput.value).getTime() : 0;
     const editId = Number(editNoticeIdInput.value);
+    let savedNotice = null;
 
     if (editId) {
-      const idx = db.notices.findIndex(n => n.id === editId);
+      const idx = db.notices.findIndex(n => Number(n.id) === editId);
       if (idx !== -1) {
         db.notices[idx] = {
           ...db.notices[idx],
@@ -821,9 +972,10 @@
             ? [...(db.notices[idx].attachments || []), ...uploadedAttachments]
             : db.notices[idx].attachments
         };
+        savedNotice = db.notices[idx];
       }
     } else {
-      db.notices.unshift({
+      savedNotice = {
         id: Date.now(),
         title,
         description,
@@ -837,7 +989,8 @@
         isPinned: currentUser.role === 'Administrator' ? noticePinnedCheckbox.checked : false,
         visibility: noticeVisibilitySelect.value,
         attachments: uploadedAttachments
-      });
+      };
+      db.notices.unshift(savedNotice);
     }
 
     saveDb(db);
@@ -848,6 +1001,10 @@
     btnCancelEdit.classList.add('hidden');
     renderNotices();
     document.getElementById('notices').scrollIntoView({ behavior: 'smooth' });
+
+    if (savedNotice) {
+      await publishCloudEvent({ action: 'UPSERT', notice: savedNotice });
+    }
   });
 
   // Attachment Preview Modal
@@ -877,9 +1034,68 @@
     previewModal.classList.remove('open');
   });
 
-  // Login Modal
+  // Login Modal & Role Credential Helper
   const loginModal = document.getElementById('login-modal');
   const loginErrorEl = document.getElementById('login-error');
+  const helperRoleSelect = document.getElementById('helper-role-select');
+  const helperDeptWrap = document.getElementById('helper-dept-wrap');
+  const helperDeptSelect = document.getElementById('helper-dept-select');
+  const helperNumWrap = document.getElementById('helper-num-wrap');
+  const helperNumSelect = document.getElementById('helper-num-select');
+  const btnApplyHelper = document.getElementById('btn-apply-helper');
+
+  function updateHelperFields() {
+    const role = helperRoleSelect.value;
+    if (role === 'principal') {
+      helperDeptWrap.classList.add('hidden');
+      helperNumWrap.classList.add('hidden');
+    } else if (role === 'hod') {
+      helperDeptWrap.classList.remove('hidden');
+      helperNumWrap.classList.add('hidden');
+    } else if (role === 'faculty') {
+      helperDeptWrap.classList.remove('hidden');
+      helperNumWrap.classList.remove('hidden');
+      helperNumSelect.innerHTML = [1, 2, 3]
+        .map(n => `<option value="${n}">Faculty ${n}</option>`)
+        .join('');
+    } else if (role === 'student') {
+      helperDeptWrap.classList.remove('hidden');
+      helperNumWrap.classList.remove('hidden');
+      helperNumSelect.innerHTML = Array.from({ length: 10 }, (_, i) => i + 1)
+        .map(n => `<option value="${n}">Student ${n}</option>`)
+        .join('');
+    }
+  }
+
+  if (helperRoleSelect) {
+    helperRoleSelect.addEventListener('change', updateHelperFields);
+    updateHelperFields();
+  }
+
+  if (btnApplyHelper) {
+    btnApplyHelper.addEventListener('click', () => {
+      const role = helperRoleSelect.value;
+      const dept = helperDeptSelect.value;
+      const num = helperNumSelect.value || '1';
+      const loginInput = document.getElementById('login-id-input');
+      const passInput = document.getElementById('login-pass-input');
+
+      if (role === 'principal') {
+        loginInput.value = 'principal';
+        passInput.value = 'principal123';
+      } else if (role === 'hod') {
+        loginInput.value = `hod_${dept}`;
+        passInput.value = 'hod123';
+      } else if (role === 'faculty') {
+        loginInput.value = `faculty_${dept}${num}`;
+        passInput.value = 'faculty123';
+      } else {
+        loginInput.value = `student_${dept}${num}`;
+        passInput.value = 'student123';
+      }
+    });
+  }
+
   btnOpenLogin.addEventListener('click', () => {
     loginErrorEl.classList.add('hidden');
     loginModal.classList.add('open');
@@ -893,25 +1109,18 @@
     renderAuthUI();
   });
 
-  document.querySelectorAll('[data-fill-login]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      document.getElementById('login-id-input').value = btn.getAttribute('data-fill-login');
-      document.getElementById('login-pass-input').value = btn.getAttribute('data-fill-pass');
-    });
-  });
-
   document.getElementById('login-form').addEventListener('submit', e => {
     e.preventDefault();
-    const id = document.getElementById('login-id-input').value.trim();
+    const id = document.getElementById('login-id-input').value.trim().toLowerCase();
     const pass = document.getElementById('login-pass-input').value;
-    const user = db.users.find(u => u.loginId === id && u.password === pass);
+    const user = db.users.find(u => u.loginId.toLowerCase() === id && u.password === pass);
     if (!user) {
-      loginErrorEl.textContent = 'Invalid login ID or password.';
+      loginErrorEl.textContent = 'Invalid Login ID or password.';
       loginErrorEl.classList.remove('hidden');
       return;
     }
     if (!user.isActive) {
-      loginErrorEl.textContent = 'This account has been deactivated by the administrator.';
+      loginErrorEl.textContent = 'This account has been deactivated by the Admin Principal.';
       loginErrorEl.classList.remove('hidden');
       return;
     }
@@ -924,13 +1133,13 @@
   // Admin Console Handlers
   document.getElementById('create-user-form').addEventListener('submit', e => {
     e.preventDefault();
-    const loginId = document.getElementById('new-user-login').value.trim();
+    const loginId = document.getElementById('new-user-login').value.trim().toLowerCase();
     const password = document.getElementById('new-user-pass').value;
     const fullName = document.getElementById('new-user-name').value.trim();
     const role = document.getElementById('new-user-role').value;
     const department = document.getElementById('new-user-dept').value;
 
-    if (db.users.some(u => u.loginId === loginId)) {
+    if (db.users.some(u => u.loginId.toLowerCase() === loginId)) {
       window.alert('Login ID already exists.');
       return;
     }
@@ -960,7 +1169,7 @@
     if (toggleUserBtn) {
       const loginId = toggleUserBtn.getAttribute('data-toggle-user');
       const user = db.users.find(u => u.loginId === loginId);
-      if (user && user.loginId !== 'admin') {
+      if (user && user.loginId !== 'principal' && user.loginId !== 'admin') {
         user.isActive = !user.isActive;
         saveDb(db);
         renderAdminPanel();
@@ -981,10 +1190,11 @@
   });
 
   document.getElementById('btn-reset-demo-data').addEventListener('click', () => {
-    if (!window.confirm('Reset all notices, users, and departments to initial GCE Salem demo data?')) return;
+    if (!window.confirm('Reset all accounts and departments to default GCE Salem roles?')) return;
     db = defaultDatabase();
     saveDb(db);
     renderAuthUI();
+    syncFromCloud();
   });
 
   // Theme Controls
@@ -1000,11 +1210,10 @@
     renderNotices();
   });
 
-  // Live 15-Second Automatic Polling
+  // Live 15-Second Automatic Cloud Polling
   window.setInterval(() => {
     if (document.hidden) return;
-    db = loadDb();
-    renderNotices();
+    syncFromCloud();
   }, 15000);
 
   window.addEventListener('storage', () => {
@@ -1014,4 +1223,6 @@
 
   // Initial Boot
   renderAuthUI();
+  syncFromCloud();
+  startRealtimeStream();
 })();

@@ -21,7 +21,7 @@ UPLOAD_DIR = ROOT / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 MAX_FILE_SIZE = 10 * 1024 * 1024
 ALLOWED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".doc", ".docx", ".xls", ".xlsx"}
-ALLOWED_ROLES = {"Administrator", "Faculty", "Student"}
+ALLOWED_ROLES = {"Administrator", "HOD", "Faculty", "Student"}
 
 def valid_file_signature(ext: str, data: bytes) -> bool:
     """Basic signature checks in addition to extension and size validation."""
@@ -42,12 +42,13 @@ templates = Jinja2Templates(directory=str(ROOT / "templates"))
 Base.metadata.create_all(bind=engine)
 
 DEPARTMENTS = [
-    ("Computer Science and Engineering", "CSE"),
-    ("Information Technology", "IT"),
+    ("Civil Engineering", "CIVIL"),
+    ("Mechanical Engineering", "MECH"),
     ("Electronics and Communication Engineering", "ECE"),
     ("Electrical and Electronics Engineering", "EEE"),
-    ("Mechanical Engineering", "ME"),
-    ("Civil Engineering", "CE"),
+    ("Computer Science and Engineering", "CSE"),
+    ("Metallurgical Engineering", "METT"),
+    ("Artificial Intelligence and Machine Learning", "AIML"),
 ]
 
 def seed_data():
@@ -59,16 +60,26 @@ def seed_data():
         db.commit()
         depts = {d.code: d for d in db.query(Department).all()}
         demo_users = [
-            ("admin", "admin123", "College Administrator", "Administrator", None, "admin@gcesalem.edu.in"),
-            ("faculty_cse", "faculty123", "CSE Faculty", "Faculty", depts["CSE"].id, "faculty.cse@gcesalem.edu.in"),
-            ("student_cse", "student123", "CSE Student", "Student", depts["CSE"].id, "student.cse@gcesalem.edu.in"),
+            ("principal", "principal123", "Admin Principal", "Administrator", None, "principal@gcesalem.edu.in"),
+            ("admin", "admin123", "Admin Principal", "Administrator", None, "admin@gcesalem.edu.in"),
         ]
+        for _, code in DEPARTMENTS:
+            d_low = code.lower()
+            d_id = depts[code].id
+            demo_users.append((f"hod_{d_low}", "hod123", f"HOD - {code}", "HOD", d_id, f"hod.{d_low}@gcesalem.edu.in"))
+            for i in range(1, 4):
+                demo_users.append((f"faculty_{d_low}{i}", "faculty123", f"Faculty {i} - {code}", "Faculty", d_id, f"faculty{i}.{d_low}@gcesalem.edu.in"))
+            for s in range(1, 11):
+                demo_users.append((f"student_{d_low}{s}", "student123", f"Student {s} - {code}", "Student", d_id, f"student{s}.{d_low}@student.gcesalem.edu.in"))
+            demo_users.append((f"faculty_{d_low}", "faculty123", f"Faculty 1 - {code}", "Faculty", d_id, f"faculty.{d_low}@gcesalem.edu.in"))
+            demo_users.append((f"student_{d_low}", "student123", f"Student 1 - {code}", "Student", d_id, f"student.{d_low}@student.gcesalem.edu.in"))
+
         for login, password, full, role, dept_id, email in demo_users:
             if not db.query(User).filter_by(login_id=login).first():
                 db.add(User(login_id=login, password_hash=hash_password(password), full_name=full, role=role, department_id=dept_id, email=email, is_active=True))
         db.commit()
         if db.query(Notice).count() == 0:
-            admin = db.query(User).filter_by(login_id="admin").first()
+            admin = db.query(User).filter_by(login_id="principal").first() or db.query(User).filter_by(login_id="admin").first()
             db.add(Notice(title="Welcome to the GCE Salem Digital Notice Board", description="Official college announcements, examination updates, placement opportunities and department circulars are published here. Sign in to access role-specific features.", category="General", priority="HIGH", author_id=admin.id, is_pinned=True, visibility="PUBLIC"))
             db.add(Notice(title="End Semester Examination Updates", description="Students should check official department communications and the Controller of Examinations announcements regularly.", category="Examination", priority="MEDIUM", author_id=admin.id, is_pinned=False, visibility="PUBLIC"))
             db.commit()
@@ -110,12 +121,12 @@ def visible_notices_query(db: Session, user: Optional[User]):
         query = query.filter(Notice.visibility == "PUBLIC")
     elif user.role == "Student":
         query = query.filter(or_(Notice.visibility == "PUBLIC", Notice.department_id.is_(None), Notice.department_id == user.department_id))
-    elif user.role == "Faculty":
+    elif user.role in {"Faculty", "HOD"}:
         query = query.filter(or_(Notice.visibility == "PUBLIC", Notice.department_id.is_(None), Notice.department_id == user.department_id))
     return query
 
 def notice_dict(n: Notice):
-    return {"id": n.id, "title": n.title, "description": n.description, "category": n.category, "priority": n.priority, "department_id": n.department_id, "department": n.department.code if n.department else "College-wide", "department_name": n.department.name if n.department else "College-wide", "author": n.author.full_name if n.author else "College", "published_at": n.published_at.isoformat() if n.published_at else None, "expires_at": n.expires_at.isoformat() if n.expires_at else None, "is_pinned": n.is_pinned, "visibility": n.visibility, "attachments": [{"id": a.id, "filename": a.original_filename, "size": a.file_size, "content_type": a.content_type, "url": f"/attachments/{a.id}"} for a in n.attachments]}
+    return {"id": n.id, "title": n.title, "description": n.description, "category": n.category, "priority": n.priority, "department_id": n.department_id, "department": n.department.code if n.department else "College-wide", "department_name": n.department.name if n.department else "College-wide", "author": n.author.full_name if n.author else "Admin Principal", "published_at": n.published_at.isoformat() if n.published_at else None, "expires_at": n.expires_at.isoformat() if n.expires_at else None, "is_pinned": n.is_pinned, "visibility": n.visibility, "attachments": [{"id": a.id, "filename": a.original_filename, "size": a.file_size, "content_type": a.content_type, "url": f"/attachments/{a.id}"} for a in n.attachments]}
 
 @app.get("/health")
 def health():
@@ -168,7 +179,7 @@ def logout(request: Request, csrf_token: str = Form(...)):
 async def create_notice_form(request: Request, title: str = Form(...), description: str = Form(...), department_code: str = Form("ALL"), category: str = Form("General"), priority: str = Form("MEDIUM"), visibility: str = Form("PUBLIC"), expires_at: str = Form(""), is_pinned: Optional[str] = Form(None), csrf_token: str = Form(...), files: List[UploadFile] = File(default=[]), db: Session = Depends(get_db)):
     csrf_ok(request, csrf_token)
     user = require_user(request, db)
-    require_roles(user, "Administrator", "Faculty")
+    require_roles(user, "Administrator", "HOD", "Faculty")
     title = title.strip(); description = description.strip()
     if not title or len(title) > 200 or not description:
         raise HTTPException(status_code=400, detail="Title and description are required; title must be under 200 characters")
@@ -177,12 +188,12 @@ async def create_notice_form(request: Request, title: str = Form(...), descripti
         dept = db.query(Department).filter_by(code=department_code, is_active=True).first()
         if not dept: raise HTTPException(status_code=400, detail="Select a valid department")
         department_id = dept.id
-    if user.role == "Faculty" and department_id != user.department_id:
-        raise HTTPException(status_code=403, detail="Faculty may publish only to their assigned department")
+    if user.role in {"Faculty", "HOD"} and department_id != user.department_id:
+        raise HTTPException(status_code=403, detail="HOD and Faculty may publish only to their assigned department")
     if priority not in {"LOW", "MEDIUM", "HIGH"}: priority = "MEDIUM"
     if category not in {"General", "Examination", "Events", "Placements", "Academic", "Circular", "Sports", "Other"}: category = "General"
     if visibility not in {"PUBLIC", "RESTRICTED"}: visibility = "PUBLIC"
-    if user.role == "Faculty": visibility = "RESTRICTED" if department_id else "PUBLIC"
+    if user.role in {"Faculty", "HOD"}: visibility = "RESTRICTED" if department_id else "PUBLIC"
     expiry = None
     if expires_at:
         try: expiry = datetime.fromisoformat(expires_at)
@@ -216,10 +227,11 @@ async def create_notice_form(request: Request, title: str = Form(...), descripti
 def delete_notice_form(notice_id: int, request: Request, csrf_token: str = Form(...), db: Session = Depends(get_db)):
     csrf_ok(request, csrf_token)
     user = require_user(request, db)
-    require_roles(user, "Administrator", "Faculty")
+    require_roles(user, "Administrator", "HOD", "Faculty")
     notice = db.query(Notice).options(joinedload(Notice.attachments)).filter_by(id=notice_id).first()
     if not notice: raise HTTPException(status_code=404, detail="Notice not found")
     if user.role == "Faculty" and notice.author_id != user.id: raise HTTPException(status_code=403, detail="Faculty can delete only their own notices")
+    if user.role == "HOD" and notice.department_id != user.department_id and notice.author_id != user.id: raise HTTPException(status_code=403, detail="HOD can delete only notices in their department")
     for a in notice.attachments: (UPLOAD_DIR / a.stored_filename).unlink(missing_ok=True)
     db.delete(notice); db.commit()
     return RedirectResponse("/?deleted=1", status_code=303)
@@ -235,7 +247,7 @@ def download_attachment(attachment_id: int, request: Request, db: Session = Depe
     if notice.visibility != "PUBLIC":
         if not user: raise HTTPException(status_code=401, detail="Sign in to download this attachment")
         if user.role == "Student" and notice.department_id not in (None, user.department_id): raise HTTPException(status_code=403, detail="Not available for your department")
-        if user.role == "Faculty" and notice.department_id not in (None, user.department_id) and notice.author_id != user.id: raise HTTPException(status_code=403, detail="Not permitted")
+        if user.role in {"Faculty", "HOD"} and notice.department_id not in (None, user.department_id) and notice.author_id != user.id: raise HTTPException(status_code=403, detail="Not permitted")
     path = UPLOAD_DIR / attachment.stored_filename
     if not path.is_file(): raise HTTPException(status_code=404, detail="File is missing from storage")
     return FileResponse(path, media_type=attachment.content_type, filename=attachment.original_filename, headers={"X-Content-Type-Options": "nosniff"})
@@ -286,14 +298,14 @@ def api_notices(request: Request, department: str = "ALL", category: str = "ALL"
 
 @app.post("/api/notices")
 def api_create_notice(payload: dict, request: Request, db: Session = Depends(get_db)):
-    user = require_user(request, db); require_roles(user, "Administrator", "Faculty")
+    user = require_user(request, db); require_roles(user, "Administrator", "HOD", "Faculty")
     title = str(payload.get("title", "")).strip(); description = str(payload.get("description", "")).strip()
     if not title or len(title) > 200 or not description: raise HTTPException(status_code=400, detail="Title and description are required")
     dept_code = payload.get("department", "ALL"); dept = None
     if dept_code not in (None, "", "ALL"):
         dept = db.query(Department).filter_by(code=dept_code, is_active=True).first()
         if not dept: raise HTTPException(status_code=400, detail="Invalid department")
-    if user.role == "Faculty" and (not dept or dept.id != user.department_id): raise HTTPException(status_code=403, detail="Faculty may publish only to their assigned department")
+    if user.role in {"Faculty", "HOD"} and (not dept or dept.id != user.department_id): raise HTTPException(status_code=403, detail="HOD and Faculty may publish only to their assigned department")
     expiry = None
     if payload.get("expires_at"):
         try: expiry = datetime.fromisoformat(payload["expires_at"])
@@ -312,10 +324,11 @@ def api_create_notice(payload: dict, request: Request, db: Session = Depends(get
 
 @app.put("/api/notices/{notice_id}")
 def api_update_notice(notice_id: int, payload: dict, request: Request, db: Session = Depends(get_db)):
-    user = require_user(request, db); require_roles(user, "Administrator", "Faculty")
+    user = require_user(request, db); require_roles(user, "Administrator", "HOD", "Faculty")
     n = db.query(Notice).filter_by(id=notice_id).first()
     if not n: raise HTTPException(status_code=404, detail="Notice not found")
     if user.role == "Faculty" and n.author_id != user.id: raise HTTPException(status_code=403, detail="Faculty may edit only their own notices")
+    if user.role == "HOD" and n.department_id != user.department_id and n.author_id != user.id: raise HTTPException(status_code=403, detail="HOD may edit only their department's notices")
     if "title" in payload and (not str(payload["title"]).strip() or len(str(payload["title"]).strip()) > 200): raise HTTPException(status_code=400, detail="Title is required and must be under 200 characters")
     if "description" in payload and not str(payload["description"]).strip(): raise HTTPException(status_code=400, detail="Description cannot be empty")
     if "category" in payload and payload["category"] not in {"General", "Examination", "Events", "Placements", "Academic", "Circular", "Sports", "Other"}: raise HTTPException(status_code=400, detail="Invalid category")
@@ -330,19 +343,21 @@ def api_update_notice(notice_id: int, payload: dict, request: Request, db: Sessi
 
 @app.delete("/api/notices/{notice_id}")
 def api_delete_notice(notice_id: int, request: Request, db: Session = Depends(get_db)):
-    user = require_user(request, db); require_roles(user, "Administrator", "Faculty")
+    user = require_user(request, db); require_roles(user, "Administrator", "HOD", "Faculty")
     n = db.query(Notice).options(joinedload(Notice.attachments)).filter_by(id=notice_id).first()
     if not n: raise HTTPException(status_code=404, detail="Notice not found")
     if user.role == "Faculty" and n.author_id != user.id: raise HTTPException(status_code=403, detail="Faculty may delete only their own notices")
+    if user.role == "HOD" and n.department_id != user.department_id and n.author_id != user.id: raise HTTPException(status_code=403, detail="HOD may delete only their department's notices")
     for a in n.attachments: (UPLOAD_DIR / a.stored_filename).unlink(missing_ok=True)
     db.delete(n); db.commit(); return {"ok": True}
 
 @app.post("/api/notices/{notice_id}/attachments")
 async def api_upload_attachments(notice_id: int, request: Request, files: List[UploadFile] = File(...), db: Session = Depends(get_db)):
-    user = require_user(request, db); require_roles(user, "Administrator", "Faculty")
+    user = require_user(request, db); require_roles(user, "Administrator", "HOD", "Faculty")
     notice = db.query(Notice).filter_by(id=notice_id).first()
     if not notice: raise HTTPException(status_code=404, detail="Notice not found")
     if user.role == "Faculty" and notice.author_id != user.id: raise HTTPException(status_code=403, detail="Faculty may attach files only to their own notices")
+    if user.role == "HOD" and notice.department_id != user.department_id and notice.author_id != user.id: raise HTTPException(status_code=403, detail="HOD may attach files only to their department's notices")
     saved = []
     try:
         for upload in files:

@@ -22,13 +22,12 @@
       <a href="#publish" id="nav-publish" class="hidden">Publish</a>
       <a href="#admin-panel" id="nav-admin" class="hidden">Admin Console</a>
       <a href="#theme-panel">Theme</a>
-      <a href="#viva-docs">Viva &amp; Docs</a>
       <span id="user-chip-container" class="hidden">
         <span class="user-chip">
           <span class="avatar" id="user-avatar">A</span>
           <span>
-            <span id="user-fullname">College Administrator</span>
-            <small id="user-role-dept">Administrator · ALL</small>
+            <span id="user-fullname">Admin Principal</span>
+            <small id="user-role-dept">Admin Principal · ALL</small>
           </span>
         </span>
       </span>
@@ -37,33 +36,17 @@
     </nav>
   </header>
 
-  <!-- 1-Tap Academic Demonstration Role Switcher -->
-  <div class="demo-bar" id="top">
-    <div class="demo-bar-label">
-      <span class="demo-badge">Interactive Portal</span>
-      <span>Instant Role Switcher (For Project Demo &amp; Evaluation):</span>
-    </div>
-    <div class="role-pills" id="role-switcher-pills">
-      <button type="button" class="role-pill active" data-demo-user="">Public Guest</button>
-      <button type="button" class="role-pill" data-demo-user="admin">Admin (Principal)</button>
-      <button type="button" class="role-pill" data-demo-user="faculty_cse">Faculty (CSE)</button>
-      <button type="button" class="role-pill" data-demo-user="faculty_ece">Faculty (ECE)</button>
-      <button type="button" class="role-pill" data-demo-user="student_cse">Student (CSE)</button>
-      <button type="button" class="role-pill" data-demo-user="student_it">Student (IT)</button>
-    </div>
-  </div>
-
-  <main>
+  <main id="top">
     <!-- Hero Banner -->
     <section class="hero">
       <div class="hero-copy">
         <div class="eyebrow"><span class="live-dot"></span> OFFICIAL CAMPUS UPDATES · GCE SALEM</div>
         <h1>One campus.<br><em>Every important update.</em></h1>
-        <p>Access college announcements, autonomous semester examination schedules, placement drives, and department circulars in real time.</p>
+        <p>Access college announcements, autonomous semester examination schedules, placement drives, and department circulars in real time across all devices.</p>
         <div class="hero-actions">
           <a class="button button-light" href="#notices">Explore notices <span>↓</span></a>
-          <button class="button button-secondary" id="btn-manual-refresh" type="button" style="background:rgba(255,255,255,0.12);color:#fff;border-color:rgba(255,255,255,0.25);">↻ Refresh Now</button>
-          <span class="update-status"><span class="live-dot"></span> <span id="sync-status-text">Live auto-refresh (15s)</span></span>
+          <button class="button button-secondary" id="btn-manual-refresh" type="button" style="background:rgba(255,255,255,0.14);color:#fff;border-color:rgba(255,255,255,0.3);">↻ Refresh Notices</button>
+          <span class="update-status"><span class="live-dot"></span> <span id="sync-status-text">Cloud sync active</span></span>
         </div>
       </div>
       <div class="hero-art" aria-hidden="true">
@@ -75,7 +58,7 @@
           <span class="art-tag">GCE SALEM BULLETIN</span>
         </div>
         <div class="art-bubble bubble-one">✓ Role-Based Security</div>
-        <div class="art-bubble bubble-two">↗ Department Circulars</div>
+        <div class="art-bubble bubble-two">↗ Cross-Device Sync</div>
       </div>
       <div class="hero-footer">
         <span>GOVERNMENT COLLEGE OF ENGINEERING, SALEM — 636 011</span>
@@ -95,7 +78,7 @@
       <article class="stat-card">
         <span class="stat-icon green">⌘</span>
         <div>
-          <strong id="stat-depts">6</strong>
+          <strong id="stat-depts">7</strong>
           <span>Departments</span>
         </div>
       </article>
@@ -123,11 +106,12 @@
           <h2>Latest notices <span class="heading-count" id="heading-count">0</span></h2>
           <p id="access-subtitle">Showing public college announcements. Sign in to view restricted department circulars.</p>
         </div>
-        <div style="display:flex;align-items:center;gap:14px;">
+        <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
           <label class="check-field hidden" id="expired-toggle-wrap">
             <input type="checkbox" id="filter-expired">
             <span>Show expired archive</span>
           </label>
+          <button class="button button-secondary" id="btn-section-refresh" type="button">↻ Refresh</button>
           <span class="refresh-label"><span class="live-dot"></span> Last synced: <b id="last-sync-time">Just now</b></span>
         </div>
       </div>
@@ -139,7 +123,7 @@
       <div class="filter-panel">
         <label class="search-field">
           <span>⌕</span>
-          <input id="filter-q" type="search" placeholder="Search by title, description, exam, placement, author…" aria-label="Search notices">
+          <input id="filter-q" type="search" placeholder="Search by title, description, exam, placement, role…" aria-label="Search notices">
         </label>
         <label class="select-wrap">
           <span>Department</span>
@@ -174,15 +158,15 @@
       <div class="notice-list" id="notice-list"></div>
     </section>
 
-    <!-- Publish Notice Section (Admin & Faculty Only) -->
+    <!-- Publish Notice Section (Admin Principal, HOD, and Faculty Only) -->
     <section id="publish" class="publish-section hidden">
       <div class="section-heading">
         <div>
           <div class="eyebrow dark-eyebrow">SHARE AN OFFICIAL CIRCULAR</div>
           <h2 id="form-section-title">Publish a notice</h2>
-          <p>Post an announcement with circular attachments for your department or the entire campus.</p>
+          <p>Post an announcement with circular attachments. Published notices sync across all connected phones on refresh.</p>
         </div>
-        <span class="role-label" id="publish-role-badge">Faculty / Admin Access</span>
+        <span class="role-label" id="publish-role-badge">Authorized Access</span>
       </div>
       <form class="publish-form" id="notice-form">
         <input type="hidden" id="edit-notice-id" value="">
@@ -245,39 +229,45 @@
       </form>
     </section>
 
-    <!-- Admin Management Section (Administrator Only) -->
+    <!-- Admin Management Section (Admin Principal Only) -->
     <section id="admin-panel" class="admin-section hidden">
       <div class="section-heading">
         <div>
           <div class="eyebrow dark-eyebrow">INSTITUTIONAL ADMINISTRATION</div>
-          <h2>User &amp; Department Management</h2>
-          <p>Create faculty/student credentials, manage roles, and configure GCE Salem academic departments.</p>
+          <h2>Role &amp; Department Management</h2>
+          <p>Manage Admin Principal, HODs (7), Faculty (3 per dept), and Students (10 per dept) across CIVIL, MECH, ECE, EEE, CSE, METT, and AIML.</p>
         </div>
-        <button class="button button-secondary" id="btn-reset-demo-data" type="button">↺ Reset Demo Database</button>
+        <button class="button button-secondary" id="btn-reset-demo-data" type="button">↺ Reset Default Accounts</button>
       </div>
       <div class="admin-grid">
         <!-- Users Management Card -->
         <div class="admin-card">
-          <h3 style="margin-top:0;">Registered Campus Users</h3>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
+            <h3 style="margin:0;">Registered Role Accounts (<span id="admin-user-count">0</span>)</h3>
+            <select id="admin-user-dept-filter" style="padding:6px 10px;border-radius:8px;border:1px solid #dfe6ef;font-size:11px;font-weight:700;">
+              <option value="ALL">All Departments</option>
+            </select>
+          </div>
           <form id="create-user-form" class="form-grid" style="margin-bottom:16px;">
             <label class="form-field">
               <span>Login ID <b>*</b></span>
-              <input required id="new-user-login" placeholder="e.g. faculty_me">
+              <input required id="new-user-login" placeholder="e.g. faculty_cse4">
             </label>
             <label class="form-field">
               <span>Password <b>*</b></span>
               <input required type="password" id="new-user-pass" placeholder="Password">
             </label>
             <label class="form-field">
-              <span>Full Name <b>*</b></span>
-              <input required id="new-user-name" placeholder="e.g. Dr. S. Karthikeyan">
+              <span>Role Designation <b>*</b></span>
+              <input required id="new-user-name" placeholder="e.g. Faculty 4 - CSE">
             </label>
             <label class="form-field">
-              <span>Role</span>
+              <span>Role Type</span>
               <select id="new-user-role">
                 <option value="Student">Student</option>
                 <option value="Faculty">Faculty</option>
-                <option value="Administrator">Administrator</option>
+                <option value="HOD">HOD</option>
+                <option value="Administrator">Admin Principal</option>
               </select>
             </label>
             <label class="form-field">
@@ -285,10 +275,10 @@
               <select id="new-user-dept"></select>
             </label>
             <div style="display:flex;align-items:flex-end;">
-              <button class="button button-primary" type="submit" style="width:100%;">+ Add User</button>
+              <button class="button button-primary" type="submit" style="width:100%;">+ Add Account</button>
             </div>
           </form>
-          <div class="table-list" id="admin-user-list"></div>
+          <div class="table-list" id="admin-user-list" style="max-height:360px;overflow-y:auto;"></div>
         </div>
 
         <!-- Departments Management Card -->
@@ -297,11 +287,11 @@
           <form id="create-dept-form" class="form-grid" style="margin-bottom:16px;">
             <label class="form-field">
               <span>Dept Code <b>*</b></span>
-              <input required id="new-dept-code" placeholder="e.g. AI&DS" maxlength="12">
+              <input required id="new-dept-code" placeholder="e.g. IT" maxlength="12">
             </label>
             <label class="form-field">
               <span>Department Name <b>*</b></span>
-              <input required id="new-dept-name" placeholder="Artificial Intelligence & Data Science">
+              <input required id="new-dept-name" placeholder="Information Technology">
             </label>
             <div class="field-wide">
               <button class="button button-primary" type="submit">+ Add Department</button>
@@ -315,7 +305,7 @@
     <!-- Customizable Dashboard Theme Settings -->
     <section id="theme-panel" class="settings-section">
       <details open>
-        <summary><span>⚙</span> Customizable Dashboard Theme &amp; Display Settings <small>Saved per user account</small></summary>
+        <summary><span>⚙</span> Customizable Dashboard Theme &amp; Display Settings <small>Saved per role account</small></summary>
         <div class="theme-form">
           <label>
             Mode
@@ -361,24 +351,6 @@
         </div>
       </details>
     </section>
-
-    <!-- Academic Project Architecture & Viva Section -->
-    <section id="viva-docs" class="docs-section">
-      <div class="docs-card">
-        <div class="eyebrow dark-eyebrow">COLLEGE PROJECT DOCUMENTATION</div>
-        <h2 style="margin:6px 0 12px;">System Architecture &amp; Viva Reference</h2>
-        <div class="form-grid">
-          <div class="table-row" style="flex-direction:column;align-items:flex-start;">
-            <b>1. Role-Based Access Control (RBAC)</b>
-            <span>• <b>Administrator</b> (<code>admin</code> / <code>admin123</code>): Full control over users, departments, all notices, pins, and portal defaults.<br>• <b>Faculty</b> (<code>faculty_cse</code> / <code>faculty123</code>): Publish/edit/delete notices and attachments for assigned department.<br>• <b>Student</b> (<code>student_cse</code> / <code>student123</code>): View public + department notices, preview/download attachments, customize theme.</span>
-          </div>
-          <div class="table-row" style="flex-direction:column;align-items:flex-start;">
-            <b>2. Full-Stack &amp; Hybrid Deployment</b>
-            <span>• <b>GitHub Pages Live Mode:</b> Runs directly in the browser on GitHub Pages with persistent local storage, real file attachment previews, and instant role switching.<br>• <b>FastAPI + SQLite Server Mode:</b> Run <code>cd webapp &amp;&amp; uvicorn main:app --reload</code> for Python REST API + SQLAlchemy ORM.<br>• <b>Android App:</b> Native Kotlin + Jetpack Compose + Room SQLite in <code>app/</code>.</span>
-          </div>
-        </div>
-      </div>
-    </section>
   </main>
 
   <!-- Sign In Modal -->
@@ -388,12 +360,48 @@
         <h3>Sign in to GCE Salem Portal</h3>
         <button class="icon-button" id="btn-close-login" type="button">×</button>
       </div>
-      <p style="font-size:12px;color:#667085;margin-top:0;">Enter your college Login ID and password, or click a quick demo credential below.</p>
+      <p style="font-size:12px;color:#667085;margin-top:0;">Select your Role &amp; Department to auto-fill your role ID, or enter your Login ID and password below.</p>
+
+      <!-- Role & Department Quick Selector inside Sign-In Modal -->
+      <div style="background:#f8fafd;border:1px solid #e4ebf5;border-radius:12px;padding:12px;margin-bottom:14px;">
+        <div style="font-size:11px;font-weight:800;color:#344054;margin-bottom:8px;">SELECT ROLE CREDENTIAL</div>
+        <div class="form-grid" style="gap:10px;">
+          <label class="form-field">
+            <span>Role</span>
+            <select id="helper-role-select">
+              <option value="principal">Admin Principal</option>
+              <option value="hod">HOD</option>
+              <option value="faculty">Faculty (1 – 3)</option>
+              <option value="student">Student (1 – 10)</option>
+            </select>
+          </label>
+          <label class="form-field" id="helper-dept-wrap">
+            <span>Department</span>
+            <select id="helper-dept-select">
+              <option value="civil">CIVIL</option>
+              <option value="mech">MECH</option>
+              <option value="ece">ECE</option>
+              <option value="eee">EEE</option>
+              <option value="cse" selected>CSE</option>
+              <option value="mett">METT</option>
+              <option value="aiml">AIML</option>
+            </select>
+          </label>
+          <label class="form-field hidden" id="helper-num-wrap">
+            <span>Member Number</span>
+            <select id="helper-num-select"></select>
+          </label>
+          <div style="display:flex;align-items:flex-end;">
+            <button type="button" class="button button-secondary" id="btn-apply-helper" style="width:100%;">Fill Login ID</button>
+          </div>
+        </div>
+      </div>
+
       <div id="login-error" class="hidden" style="background:#fff1f0;border:1px solid #ffd7d3;color:#b42318;padding:10px;border-radius:8px;font-size:12px;margin-bottom:12px;"></div>
       <form id="login-form" class="form-grid">
         <label class="form-field field-wide">
           <span>Login ID</span>
-          <input required id="login-id-input" placeholder="admin / faculty_cse / student_cse">
+          <input required id="login-id-input" placeholder="e.g. principal, hod_cse, faculty_cse1, student_cse1">
         </label>
         <label class="form-field field-wide">
           <span>Password</span>
@@ -403,14 +411,6 @@
           <button class="button button-primary" type="submit" style="width:100%;">Sign In</button>
         </div>
       </form>
-      <div style="margin-top:16px;padding-top:12px;border-top:1px solid #eaecf0;font-size:11px;">
-        <b>Demo Credentials (Click to auto-fill):</b>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;">
-          <button type="button" class="role-pill" data-fill-login="admin" data-fill-pass="admin123">Admin (admin / admin123)</button>
-          <button type="button" class="role-pill" data-fill-login="faculty_cse" data-fill-pass="faculty123">Faculty CSE (faculty_cse / faculty123)</button>
-          <button type="button" class="role-pill" data-fill-login="student_cse" data-fill-pass="student123">Student CSE (student_cse / student123)</button>
-        </div>
-      </div>
     </div>
   </div>
 

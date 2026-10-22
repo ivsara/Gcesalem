@@ -196,6 +196,7 @@ fun NoticeCard(
     val now = System.currentTimeMillis()
     val isExpired = notice.expiresAt in 1..now
     val canModify = currentUser?.role == UserRole.ADMIN.name ||
+            (currentUser?.role == UserRole.HOD.name && (notice.departmentCode == currentUser.departmentCode || notice.authorId == currentUser.id)) ||
             (currentUser?.role == UserRole.FACULTY.name && notice.authorId == currentUser.id)
 
     val content: @Composable () -> Unit = {
@@ -1201,45 +1202,123 @@ fun LoginDialog(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
 
-                // Quick Demo Preset Selection Chips for Academic Evaluation
+                // Role & Department Credential Helper (No Personal Names)
+                var selectedRoleType by remember { mutableStateOf("ADMIN") }
+                var selectedDeptCode by remember { mutableStateOf("CSE") }
+                var selectedNumber by remember { mutableStateOf(1) }
+
+                fun applySelectedCredentials(roleType: String, dept: String, num: Int) {
+                    val dLower = dept.lowercase()
+                    when (roleType) {
+                        "ADMIN" -> {
+                            loginId = "principal"
+                            password = "principal123"
+                        }
+                        "HOD" -> {
+                            loginId = "hod_$dLower"
+                            password = "hod123"
+                        }
+                        "FACULTY" -> {
+                            val idx = num.coerceIn(1, 3)
+                            loginId = "faculty_${dLower}$idx"
+                            password = "faculty123"
+                        }
+                        "STUDENT" -> {
+                            val idx = num.coerceIn(1, 10)
+                            loginId = "student_${dLower}$idx"
+                            password = "student123"
+                        }
+                    }
+                }
+
                 Surface(
-                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f),
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
                     shape = RoundedCornerShape(8.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Column(modifier = Modifier.padding(8.dp)) {
+                    Column(
+                        modifier = Modifier.padding(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
                         Text(
-                            text = "QUICK DEMO PRESETS (1-Tap):",
+                            text = "SELECT ROLE & DEPARTMENT CREDENTIALS:",
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.primary
                         )
-                        Spacer(modifier = Modifier.height(4.dp))
+
+                        // Role chips
                         Row(
                             horizontalArrangement = Arrangement.spacedBy(4.dp),
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            AssistChip(
-                                onClick = {
-                                    loginId = "admin"
-                                    password = "admin123"
-                                },
-                                label = { Text("Admin", fontSize = 11.sp) }
+                            listOf(
+                                "ADMIN" to "Admin Principal",
+                                "HOD" to "HOD",
+                                "FACULTY" to "Faculty (1-3)",
+                                "STUDENT" to "Student (1-10)"
+                            ).forEach { (rKey, rLabel) ->
+                                FilterChip(
+                                    selected = selectedRoleType == rKey,
+                                    onClick = {
+                                        selectedRoleType = rKey
+                                        selectedNumber = 1
+                                        applySelectedCredentials(rKey, selectedDeptCode, 1)
+                                    },
+                                    label = { Text(rLabel, fontSize = 10.sp) }
+                                )
+                            }
+                        }
+
+                        if (selectedRoleType != "ADMIN") {
+                            Text(
+                                text = "Department (CIVIL, MECH, ECE, EEE, CSE, METT, AIML):",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.SemiBold
                             )
-                            AssistChip(
-                                onClick = {
-                                    loginId = "faculty_cse"
-                                    password = "faculty123"
-                                },
-                                label = { Text("Faculty CSE", fontSize = 11.sp) }
+                            @OptIn(ExperimentalLayoutApi::class)
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                verticalArrangement = Arrangement.spacedBy(2.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                listOf("CIVIL", "MECH", "ECE", "EEE", "CSE", "METT", "AIML").forEach { dCode ->
+                                    FilterChip(
+                                        selected = selectedDeptCode == dCode,
+                                        onClick = {
+                                            selectedDeptCode = dCode
+                                            applySelectedCredentials(selectedRoleType, dCode, selectedNumber)
+                                        },
+                                        label = { Text(dCode, fontSize = 10.sp) }
+                                    )
+                                }
+                            }
+                        }
+
+                        if (selectedRoleType == "FACULTY" || selectedRoleType == "STUDENT") {
+                            val maxCount = if (selectedRoleType == "FACULTY") 3 else 10
+                            Text(
+                                text = if (selectedRoleType == "FACULTY") "Select Faculty Number (1 - 3):" else "Select Student Number (1 - 10):",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.SemiBold
                             )
-                            AssistChip(
-                                onClick = {
-                                    loginId = "student_cse"
-                                    password = "student123"
-                                },
-                                label = { Text("Student CSE", fontSize = 11.sp) }
-                            )
+                            @OptIn(ExperimentalLayoutApi::class)
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                verticalArrangement = Arrangement.spacedBy(2.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                (1..maxCount).forEach { num ->
+                                    FilterChip(
+                                        selected = selectedNumber == num,
+                                        onClick = {
+                                            selectedNumber = num
+                                            applySelectedCredentials(selectedRoleType, selectedDeptCode, num)
+                                        },
+                                        label = { Text("#$num", fontSize = 10.sp) }
+                                    )
+                                }
+                            }
                         }
                     }
                 }

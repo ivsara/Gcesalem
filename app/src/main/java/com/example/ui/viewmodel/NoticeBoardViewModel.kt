@@ -15,6 +15,7 @@ import com.example.data.model.NoticeVisibility
 import com.example.data.model.UserEntity
 import com.example.data.model.UserPreferenceEntity
 import com.example.data.model.UserRole
+import com.example.data.remote.CloudNoticeSync
 import com.example.data.repository.NoticeBoardRepository
 import com.example.data.security.SecurityUtils
 import kotlinx.coroutines.Dispatchers
@@ -123,15 +124,15 @@ class NoticeBoardViewModel(application: Application) : AndroidViewModel(applicat
                         notice.departmentCode == "ALL" ||
                         notice.departmentCode == user.departmentCode
                 if (!canView) return@filter false
-            } else if (user.role == UserRole.FACULTY.name) {
-                // Faculty: sees PUBLIC, ALL dept, their dept notices, or notices they authored
+            } else if (user.role == UserRole.FACULTY.name || user.role == UserRole.HOD.name) {
+                // HOD & Faculty: sees PUBLIC, ALL dept, their dept notices, or notices they authored
                 val canView = notice.visibility == NoticeVisibility.PUBLIC.name ||
                         notice.departmentCode == "ALL" ||
                         notice.departmentCode == user.departmentCode ||
                         notice.authorId == user.id
                 if (!canView) return@filter false
             }
-            // Admin can view all notices
+            // Admin Principal can view all notices
 
             // Department filter
             if (criteria.deptFilter != "ALL" && notice.departmentCode != criteria.deptFilter && notice.departmentCode != "ALL") {
@@ -173,6 +174,8 @@ class NoticeBoardViewModel(application: Application) : AndroidViewModel(applicat
     init {
         viewModelScope.launch(Dispatchers.IO) {
             AppDatabase.ensureSeeded(database)
+            CloudNoticeSync.pullAndApplyRemoteNotices(repository)
+            _lastRefreshedAt.value = System.currentTimeMillis()
         }
         startPolling()
     }
@@ -194,9 +197,6 @@ class NoticeBoardViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
-    /**
-     * Quick switcher for academic project testing & demonstration
-     */
     fun switchToUser(user: UserEntity?) {
         _currentUser.value = user
         if (user != null) {
@@ -232,7 +232,7 @@ class NoticeBoardViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
-    // ---------------- REAL-TIME POLLING ----------------
+    // ---------------- REAL-TIME POLLING & CROSS-PHONE SYNC ----------------
 
     private fun startPolling() {
         pollingJob?.cancel()
@@ -241,6 +241,7 @@ class NoticeBoardViewModel(application: Application) : AndroidViewModel(applicat
                 val intervalSec = (collegeSettings.value?.refreshIntervalSeconds ?: 10).coerceIn(5, 60)
                 delay(intervalSec * 1000L)
                 if (_isPollingActive.value) {
+                    CloudNoticeSync.pullAndApplyRemoteNotices(repository)
                     _lastRefreshedAt.value = System.currentTimeMillis()
                 }
             }
@@ -250,12 +251,17 @@ class NoticeBoardViewModel(application: Application) : AndroidViewModel(applicat
     fun togglePolling(enabled: Boolean) {
         _isPollingActive.value = enabled
         if (enabled) {
-            _lastRefreshedAt.value = System.currentTimeMillis()
+            manualRefresh()
         }
     }
 
-    fun manualRefresh() {
+    fun manualRefresh(onDone: ((Int) -> Unit)? = null) {
         _lastRefreshedAt.value = System.currentTimeMillis()
+        viewModelScope.launch {
+            val count = CloudNoticeSync.pullAndApplyRemoteNotices(repository)
+            _lastRefreshedAt.value = System.currentTimeMillis()
+            onDone?.invoke(count)
+        }
     }
 
     // ---------------- NOTICE MANAGEMENT ----------------
@@ -274,9 +280,11 @@ class NoticeBoardViewModel(application: Application) : AndroidViewModel(applicat
     ) {
         val user = _currentUser.value ?: return onComplete(false)
 
-        // Validation & permissions check
+        // Validation & permissions check: ADMIN, HOD, and FACULTY can publish
         if (user.role == UserRole.STUDENT.name) return onComplete(false)
-        if (user.role == UserRole.FACULTY.name && departmentCode != "ALL" && departmentCode != user.departmentCode) {
+        if ((user.role == UserRole.FACULTY.name || user.role == UserRole.HOD.name) &&
+            departmentCode != "ALL" && departmentCode != user.departmentCode
+        ) {
             return onComplete(false)
         }
 
@@ -285,6 +293,7 @@ class NoticeBoardViewModel(application: Application) : AndroidViewModel(applicat
             val expiresAt = if (expiryDays > 0) now + (expiryDays * 24L * 60 * 60 * 1000) else 0L
 
             val notice = NoticeEntity(
+                id = now,
                 title = title.trim(),
                 description = description.trim(),
                 departmentCode = departmentCode,
@@ -300,12 +309,21 @@ class NoticeBoardViewModel(application: Application) : AndroidViewModel(applicat
                 visibility = visibility
             )
             val noticeId = repository.insertNotice(notice)
+            val savedNotice = notice.copy(id = noticeId)
 
-            attachments.forEach { att ->
-                repository.insertAttachment(att.copy(noticeId = noticeId, uploadedBy = user.loginId))
+            val savedAttachments = attachments.map { att ->
+                val toInsert = att.copy(noticeId = noticeId, uploadedBy = user.loginId)
+                val attId = repository.insertAttachment(toInsert)
+                toInsert.copy(id = attId)
             }
 
-            manualRefresh()
+            CloudNoticeSync.pushUpsert(
+                notice = savedNotice,
+                authorLoginId = user.loginId,
+                attachments = savedAttachments
+            )
+
+            _lastRefreshedAt.value = System.currentTimeMillis()
             onComplete(true)
         }
     }
@@ -317,19 +335,33 @@ class NoticeBoardViewModel(application: Application) : AndroidViewModel(applicat
     ) {
         val user = _currentUser.value ?: return onComplete(false)
 
-        // Permissions check: Admins can edit any; Faculty can only edit their own
+        // Permissions check: Admins can edit any; HOD can edit their department's notices; Faculty can edit their own
         if (user.role == UserRole.FACULTY.name && notice.authorId != user.id) {
+            return onComplete(false)
+        }
+        if (user.role == UserRole.HOD.name && notice.departmentCode != user.departmentCode && notice.authorId != user.id) {
             return onComplete(false)
         }
 
         viewModelScope.launch {
-            repository.updateNotice(notice.copy(updatedAt = System.currentTimeMillis()))
+            val updated = notice.copy(updatedAt = System.currentTimeMillis())
+            repository.updateNotice(updated)
+            val savedAtts = mutableListOf<AttachmentEntity>()
             newAttachments.forEach { att ->
                 if (att.id == 0L) {
-                    repository.insertAttachment(att.copy(noticeId = notice.id, uploadedBy = user.loginId))
+                    val toInsert = att.copy(noticeId = notice.id, uploadedBy = user.loginId)
+                    val attId = repository.insertAttachment(toInsert)
+                    savedAtts.add(toInsert.copy(id = attId))
+                } else {
+                    savedAtts.add(att)
                 }
             }
-            manualRefresh()
+            CloudNoticeSync.pushUpsert(
+                notice = updated,
+                authorLoginId = user.loginId,
+                attachments = savedAtts
+            )
+            _lastRefreshedAt.value = System.currentTimeMillis()
             onComplete(true)
         }
     }
@@ -341,7 +373,8 @@ class NoticeBoardViewModel(application: Application) : AndroidViewModel(applicat
         }
         viewModelScope.launch {
             repository.deleteNoticeById(noticeId)
-            manualRefresh()
+            CloudNoticeSync.pushDelete(noticeId)
+            _lastRefreshedAt.value = System.currentTimeMillis()
             onComplete(true)
         }
     }

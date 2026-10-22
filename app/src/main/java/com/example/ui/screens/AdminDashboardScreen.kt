@@ -139,7 +139,7 @@ fun UserManagementTab(
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    text = "Manage Administrators, Faculty & Students",
+                    text = "Manage Admin Principal, 7 HODs, 21 Faculty & 70 Students",
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -308,7 +308,7 @@ fun UserCard(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Select User Role:", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                    listOf(UserRole.ADMIN.name, UserRole.FACULTY.name, UserRole.STUDENT.name).forEach { r ->
+                    listOf(UserRole.ADMIN.name, UserRole.HOD.name, UserRole.FACULTY.name, UserRole.STUDENT.name).forEach { r ->
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             androidx.compose.material3.RadioButton(
                                 selected = newRole == r,
@@ -320,11 +320,12 @@ fun UserCard(
 
                     Spacer(modifier = Modifier.height(4.dp))
                     Text("Department Assignment:", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                    Row(
+                    @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+                    androidx.compose.foundation.layout.FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        listOf("ALL", "CSE", "IT", "ECE", "EEE", "ME", "CE").forEach { d ->
+                        listOf("ALL", "CIVIL", "MECH", "ECE", "EEE", "CSE", "METT", "AIML").forEach { d ->
                             androidx.compose.material3.FilterChip(
                                 selected = newDept == d,
                                 onClick = { newDept = d },
@@ -415,7 +416,7 @@ fun CreateUserDialog(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    listOf(UserRole.ADMIN.name, UserRole.FACULTY.name, UserRole.STUDENT.name).forEach { r ->
+                    listOf(UserRole.ADMIN.name, UserRole.HOD.name, UserRole.FACULTY.name, UserRole.STUDENT.name).forEach { r ->
                         androidx.compose.material3.FilterChip(
                             selected = role == r,
                             onClick = { role = r },
@@ -425,11 +426,12 @@ fun CreateUserDialog(
                 }
 
                 Text("Department:", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                Row(
+                @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+                androidx.compose.foundation.layout.FlowRow(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    listOf("ALL", "CSE", "IT", "ECE", "EEE", "ME", "CE").take(4).forEach { d ->
+                    listOf("ALL", "CIVIL", "MECH", "ECE", "EEE", "CSE", "METT", "AIML").forEach { d ->
                         androidx.compose.material3.FilterChip(
                             selected = selectedDept == d,
                             onClick = { selectedDept = d },

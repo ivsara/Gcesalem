@@ -97,14 +97,16 @@ fun PublicNoticeScreen(
     val showExpiredOnly by viewModel.showExpiredOnly.collectAsState()
 
     // Dialog state controllers
+    val context = androidx.compose.ui.platform.LocalContext.current
     var selectedNoticeForDetail by remember { mutableStateOf<NoticeEntity?>(null) }
     var selectedNoticeForEdit by remember { mutableStateOf<NoticeEntity?>(null) }
     var showCreateNoticeDialog by remember { mutableStateOf(false) }
     var showLoginDialog by remember { mutableStateOf(false) }
-    var showQuickSwitchDialog by remember { mutableStateOf(false) }
     var noticeToDelete by remember { mutableStateOf<NoticeEntity?>(null) }
 
-    val canPublishNotice = currentUser?.role == UserRole.ADMIN.name || currentUser?.role == UserRole.FACULTY.name
+    val canPublishNotice = currentUser?.role == UserRole.ADMIN.name ||
+            currentUser?.role == UserRole.HOD.name ||
+            currentUser?.role == UserRole.FACULTY.name
 
     val categories = listOf(
         "ALL",
@@ -191,14 +193,24 @@ fun PublicNoticeScreen(
                                 )
                                 Spacer(modifier = Modifier.width(2.dp))
                                 IconButton(
-                                    onClick = { viewModel.manualRefresh() },
-                                    modifier = Modifier.size(20.dp)
+                                    onClick = {
+                                        viewModel.manualRefresh {
+                                            android.widget.Toast.makeText(
+                                                context,
+                                                "Notices refreshed & synced across devices",
+                                                android.widget.Toast.LENGTH_SHORT
+                                            ).show()
+                                        }
+                                    },
+                                    modifier = Modifier
+                                        .size(24.dp)
+                                        .testTag("refresh_notices_button")
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.Refresh,
                                         contentDescription = "Refresh Now",
                                         tint = Color.White,
-                                        modifier = Modifier.size(13.dp)
+                                        modifier = Modifier.size(14.dp)
                                     )
                                 }
                             }
@@ -262,23 +274,12 @@ fun PublicNoticeScreen(
                         }
 
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            // Quick Switch Demo button for academic demonstration
-                            OutlinedButton(
-                                onClick = { showQuickSwitchDialog = true },
-                                modifier = Modifier.height(30.dp),
-                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
-                            ) {
-                                Icon(Icons.Default.SwapHoriz, contentDescription = null, modifier = Modifier.size(14.dp))
-                                Spacer(modifier = Modifier.width(3.dp))
-                                Text("Switch Role", fontSize = 11.sp)
-                            }
-
-                            Spacer(modifier = Modifier.width(6.dp))
-
                             if (currentUser == null) {
                                 Button(
                                     onClick = { showLoginDialog = true },
-                                    modifier = Modifier.height(30.dp),
+                                    modifier = Modifier
+                                        .height(30.dp)
+                                        .testTag("sign_in_button"),
                                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
                                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
                                 ) {
@@ -330,7 +331,7 @@ fun PublicNoticeScreen(
                             .horizontalScroll(rememberScrollState()),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        listOf("ALL", "CSE", "IT", "ECE", "EEE", "ME", "CE").forEach { deptCode ->
+                        listOf("ALL", "CIVIL", "MECH", "ECE", "EEE", "CSE", "METT", "AIML").forEach { deptCode ->
                             FilterChip(
                                 selected = selectedDept == deptCode,
                                 onClick = { viewModel.selectedDepartmentFilter.value = deptCode },
@@ -491,50 +492,6 @@ fun PublicNoticeScreen(
             viewModel = viewModel,
             allUsers = allUsers,
             onDismiss = { showLoginDialog = false }
-        )
-    }
-
-    // Quick Switcher Dialog for academic test & viva demonstration
-    if (showQuickSwitchDialog) {
-        AlertDialog(
-            onDismissRequest = { showQuickSwitchDialog = false },
-            title = { Text("Demonstration Role Switcher", fontWeight = FontWeight.Bold) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text(
-                        text = "Instantly switch roles to test access control restrictions, department circulars, and publishing permissions:",
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-
-                    Button(
-                        onClick = {
-                            viewModel.logout()
-                            showQuickSwitchDialog = false
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF546E7A))
-                    ) {
-                        Text("Public Guest (Unauthenticated)")
-                    }
-
-                    allUsers.forEach { u ->
-                        OutlinedButton(
-                            onClick = {
-                                viewModel.switchToUser(u)
-                                showQuickSwitchDialog = false
-                            },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text("${u.role}: ${u.fullName} (${u.departmentCode})", fontSize = 11.sp)
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { showQuickSwitchDialog = false }) { Text("Dismiss") }
-            }
         )
     }
 
