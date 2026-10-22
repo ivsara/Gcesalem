@@ -20,6 +20,92 @@
     return 'data:text/plain;charset=utf-8,' + encodeURIComponent(content);
   }
 
+  function createValidPdfBytes(title, bodyText) {
+    const clean = str => String(str || '').replace(/[()\\]/g, '').replace(/[^\x20-\x7E]/g, ' ');
+    const lines = [
+      'GOVERNMENT COLLEGE OF ENGINEERING, SALEM - 636011',
+      'OFFICIAL DIGITAL NOTICE BOARD ATTACHMENT',
+      '------------------------------------------------------------',
+      `Document: ${clean(title)}`,
+      `Generated: ${new Date().toLocaleString()}`,
+      '------------------------------------------------------------',
+      ...String(bodyText || 'Official College Circular').split(/\r?\n/).map(clean)
+    ];
+    let y = 760;
+    const ops = ['BT', '/F1 11 Tf'];
+    lines.slice(0, 38).forEach(line => {
+      ops.push(`1 0 0 1 50 ${y} Tm (${line.slice(0, 85)}) Tj`);
+      y -= 18;
+    });
+    ops.push('ET');
+    const stream = ops.join('\n');
+    const pdf =
+      '%PDF-1.4\n' +
+      '1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n' +
+      '2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n' +
+      '3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj\n' +
+      `4 0 obj << /Length ${stream.length} >> stream\n${stream}\nendstream endobj\n` +
+      '5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n' +
+      'trailer << /Root 1 0 R >>\n%%EOF';
+    return new TextEncoder().encode(pdf);
+  }
+
+  function buildDownloadBlob(att) {
+    const filename = String((att && att.filename) || 'GCE_Salem_Circular.pdf');
+    const ext = filename.split('.').pop().toLowerCase();
+    const dataUrl = String((att && att.dataUrl) || '');
+
+    // If a real uploaded file (base64 data URL) is stored, decode exact binary bytes
+    if (dataUrl.startsWith('data:') && dataUrl.includes(';base64,')) {
+      try {
+        const parts = dataUrl.split(';base64,');
+        const mime = parts[0].slice(5) || 'application/octet-stream';
+        const binary = window.atob(parts[1]);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        return new Blob([bytes], { type: mime });
+      } catch (_) {}
+    }
+
+    const preview = String((att && att.previewText) || `Official GCE Salem Attachment: ${filename}`);
+    if (ext === 'pdf') {
+      return new Blob([createValidPdfBytes(filename, preview)], { type: 'application/pdf' });
+    }
+    if (ext === 'xls' || ext === 'xlsx' || ext === 'csv') {
+      const csvContent = preview.includes(',')
+        ? preview
+        : `Document,Department,Details\n"${filename.replace(/"/g, '""')}","GCE Salem","${preview.replace(/\r?\n/g, ' ').replace(/"/g, '""')}"`;
+      return new Blob([csvContent], { type: 'text/csv;charset=utf-8' });
+    }
+    if (dataUrl.startsWith('data:text/plain;charset=utf-8,')) {
+      const decoded = decodeURIComponent(dataUrl.slice('data:text/plain;charset=utf-8,'.length));
+      if (ext === 'pdf') {
+        return new Blob([createValidPdfBytes(filename, decoded)], { type: 'application/pdf' });
+      }
+      return new Blob([decoded], { type: 'application/octet-stream' });
+    }
+    return new Blob([preview], { type: 'application/octet-stream' });
+  }
+
+  function triggerAttachmentDownload(att) {
+    if (!att) return;
+    const filename = String(att.filename || 'GCE_Salem_Notice_Attachment.pdf');
+    const blob = buildDownloadBlob(att);
+    const blobUrl = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = blobUrl;
+    link.download = filename;
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+    setTimeout(() => {
+      document.body.removeChild(link);
+      URL.revokeObjectURL(blobUrl);
+    }, 1500);
+  }
+
   const DEPT_LIST = [
     { code: 'CIVIL', name: 'Civil Engineering', isActive: true },
     { code: 'MECH', name: 'Mechanical Engineering', isActive: true },
@@ -373,12 +459,25 @@
         db.notices.unshift(normalized);
         return true;
       } else {
-        // Keep local dataUrl if already present
         const existingAtts = db.notices[idx].attachments || [];
-        if (existingAtts.length && (!normalized.attachments || !normalized.attachments.length)) {
-          normalized.attachments = existingAtts;
+        if (existingAtts.length) {
+          normalized.attachments = (normalized.attachments || []).map(att => {
+            const match = existingAtts.find(e => e.id === att.id || e.filename === att.filename);
+            if (match && match.dataUrl && (!att.dataUrl || !att.dataUrl.includes(';base64,'))) {
+              return { ...att, dataUrl: match.dataUrl };
+            }
+            return att;
+          });
         }
         db.notices[idx] = normalized;
+        return true;
+      }
+    }
+
+    if (payload.action === 'PASSWORD_RESET' && payload.loginId && payload.newPassword) {
+      const user = db.users.find(u => u.loginId.toLowerCase() === String(payload.loginId).toLowerCase());
+      if (user && user.password !== String(payload.newPassword)) {
+        user.password = String(payload.newPassword);
         return true;
       }
     }
@@ -394,7 +493,8 @@
           filename: a.filename,
           fileType: a.fileType,
           size: a.size,
-          previewText: String(a.previewText || '').slice(0, 240)
+          previewText: String(a.previewText || '').slice(0, 240),
+          dataUrl: a.dataUrl && String(a.dataUrl).length < 45000 ? a.dataUrl : undefined
         }));
       }
       await fetch(CLOUD_SYNC_URL, {
@@ -707,11 +807,16 @@
         const attachmentsHtml = (n.attachments || [])
           .map(
             a => `
-            <button type="button" class="attachment" data-preview-notice="${n.id}" data-preview-att="${a.id}">
-              <span>↧</span>
-              ${escapeHtml(a.filename)}
-              <small>${(Number(a.size || 102400) / 1048576).toFixed(2)} MB</small>
-            </button>`
+            <div class="attachment" style="display:inline-flex;align-items:center;gap:8px;padding:6px 10px;">
+              <button type="button" data-download-notice="${n.id}" data-download-att="${a.id}" style="all:unset;cursor:pointer;display:inline-flex;align-items:center;gap:6px;font-weight:700;color:var(--accent);" title="Download ${escapeHtml(a.filename)}">
+                <span>⬇ Download</span>
+                <span>${escapeHtml(a.filename)}</span>
+                <small style="color:var(--muted);font-weight:500;">(${(Number(a.size || 102400) / 1048576).toFixed(2)} MB)</small>
+              </button>
+              <button type="button" data-preview-notice="${n.id}" data-preview-att="${a.id}" style="border:1px solid var(--line);background:var(--surface);color:var(--text);border-radius:6px;padding:2px 7px;font-size:11px;font-weight:600;cursor:pointer;" title="Preview attachment">
+                Preview
+              </button>
+            </div>`
           )
           .join('');
 
@@ -859,14 +964,24 @@
     });
   }
 
-  // Notice Card Actions (Attachment Preview, Edit, Delete)
+  // Notice Card Actions (Attachment Download, Preview, Edit, Delete)
   noticeListEl.addEventListener('click', async e => {
+    const downloadBtn = e.target.closest('[data-download-notice]');
+    if (downloadBtn) {
+      const noticeId = Number(downloadBtn.getAttribute('data-download-notice'));
+      const attId = Number(downloadBtn.getAttribute('data-download-att'));
+      const notice = db.notices.find(n => Number(n.id) === noticeId);
+      const att = notice && (notice.attachments || []).find(a => Number(a.id) === attId);
+      if (att) triggerAttachmentDownload(att);
+      return;
+    }
+
     const previewBtn = e.target.closest('[data-preview-notice]');
     if (previewBtn) {
       const noticeId = Number(previewBtn.getAttribute('data-preview-notice'));
       const attId = Number(previewBtn.getAttribute('data-preview-att'));
-      const notice = db.notices.find(n => n.id === noticeId);
-      const att = notice && (notice.attachments || []).find(a => a.id === attId);
+      const notice = db.notices.find(n => Number(n.id) === noticeId);
+      const att = notice && (notice.attachments || []).find(a => Number(a.id) === attId);
       if (att) openAttachmentPreview(att);
       return;
     }
@@ -1009,13 +1124,19 @@
 
   // Attachment Preview Modal
   const previewModal = document.getElementById('preview-modal');
+  let activePreviewAttachment = null;
+
   function openAttachmentPreview(att) {
+    activePreviewAttachment = att;
     document.getElementById('preview-title').textContent = att.filename;
     const bodyEl = document.getElementById('preview-body');
-    const downloadBtn = document.getElementById('preview-download-btn');
 
     if (att.fileType === 'IMAGE' && att.dataUrl && att.dataUrl.startsWith('data:image')) {
       bodyEl.innerHTML = `<img src="${att.dataUrl}" alt="${escapeHtml(att.filename)}" style="max-width:100%;border-radius:12px;">`;
+    } else if (att.dataUrl && att.dataUrl.startsWith('data:application/pdf')) {
+      bodyEl.innerHTML = `
+        <iframe src="${att.dataUrl}" style="width:100%;height:320px;border:1px solid #e2e8f0;border-radius:10px;" title="${escapeHtml(att.filename)}"></iframe>
+        <div style="margin-top:8px;font-size:12px;color:#475467;">Click "⬇ Download File" below to save <b>${escapeHtml(att.filename)}</b> to your device.</div>`;
     } else {
       bodyEl.innerHTML = `
         <div style="background:#f8fafc;color:#1e293b;padding:14px;border-radius:10px;border:1px solid #e2e8f0;white-space:pre-line;font-family:monospace;font-size:12px;">
@@ -1023,23 +1144,117 @@
         </div>`;
     }
 
-    downloadBtn.setAttribute('download', att.filename);
-    downloadBtn.setAttribute(
-      'href',
-      att.dataUrl || createSampleDataUrl(att.filename, att.previewText || att.filename)
-    );
     previewModal.classList.add('open');
   }
+
+  document.getElementById('preview-download-btn').addEventListener('click', () => {
+    if (activePreviewAttachment) {
+      triggerAttachmentDownload(activePreviewAttachment);
+    }
+  });
+
   document.getElementById('btn-close-preview').addEventListener('click', () => {
     previewModal.classList.remove('open');
   });
 
-  // Login Modal (Manual Authentication Only)
+  // Login Modal & Forgot Password with CAPTCHA
   const loginModal = document.getElementById('login-modal');
+  const loginModalTitleEl = document.getElementById('login-modal-title');
+  const loginViewEl = document.getElementById('login-view');
+  const forgotViewEl = document.getElementById('forgot-view');
   const loginErrorEl = document.getElementById('login-error');
+  const loginSuccessEl = document.getElementById('login-success');
+  const forgotErrorEl = document.getElementById('forgot-error');
+  const captchaCanvas = document.getElementById('captcha-canvas');
+  let currentCaptchaCode = '';
+
+  function generateCaptcha() {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    let code = '';
+    for (let i = 0; i < 6; i++) {
+      code += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    currentCaptchaCode = code;
+
+    if (captchaCanvas && captchaCanvas.getContext) {
+      const ctx = captchaCanvas.getContext('2d');
+      const w = captchaCanvas.width;
+      const h = captchaCanvas.height;
+      ctx.clearRect(0, 0, w, h);
+
+      // Background gradient
+      const grad = ctx.createLinearGradient(0, 0, w, h);
+      grad.addColorStop(0, '#eef4ff');
+      grad.addColorStop(1, '#dbeafe');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, w, h);
+
+      // Security noise lines
+      for (let i = 0; i < 5; i++) {
+        ctx.strokeStyle = i % 2 === 0 ? 'rgba(21, 94, 239, 0.35)' : 'rgba(15, 23, 42, 0.25)';
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.moveTo(Math.random() * 30, Math.random() * h);
+        ctx.lineTo(w - Math.random() * 30, Math.random() * h);
+        ctx.stroke();
+      }
+
+      // Security noise dots
+      for (let i = 0; i < 28; i++) {
+        ctx.fillStyle = 'rgba(30, 41, 59, 0.28)';
+        ctx.beginPath();
+        ctx.arc(Math.random() * w, Math.random() * h, 1.3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Draw each character with slight rotation
+      ctx.font = 'bold 24px monospace';
+      ctx.textBaseline = 'middle';
+      for (let i = 0; i < code.length; i++) {
+        const ch = code[i];
+        const x = 22 + i * 26;
+        const y = h / 2 + (Math.random() * 6 - 3);
+        const angle = (Math.random() - 0.5) * 0.35;
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.rotate(angle);
+        ctx.fillStyle = i % 2 === 0 ? '#0f172a' : '#155eef';
+        ctx.fillText(ch, -7, 0);
+        ctx.restore();
+      }
+    }
+  }
+
+  function showLoginView(successMessage = '') {
+    if (loginModalTitleEl) loginModalTitleEl.textContent = 'Sign in to GCE Salem Portal';
+    if (loginViewEl) loginViewEl.classList.remove('hidden');
+    if (forgotViewEl) forgotViewEl.classList.add('hidden');
+    loginErrorEl.classList.add('hidden');
+    if (loginSuccessEl) {
+      if (successMessage) {
+        loginSuccessEl.textContent = successMessage;
+        loginSuccessEl.classList.remove('hidden');
+      } else {
+        loginSuccessEl.classList.add('hidden');
+      }
+    }
+  }
+
+  function showForgotView() {
+    if (loginModalTitleEl) loginModalTitleEl.textContent = 'Forgot Password — Security Verification';
+    if (loginViewEl) loginViewEl.classList.add('hidden');
+    if (forgotViewEl) forgotViewEl.classList.remove('hidden');
+    if (forgotErrorEl) forgotErrorEl.classList.add('hidden');
+    const prefillId = document.getElementById('login-id-input').value.trim();
+    document.getElementById('forgot-login-id').value = prefillId;
+    document.getElementById('forgot-captcha-input').value = '';
+    document.getElementById('forgot-new-pass').value = '';
+    document.getElementById('forgot-confirm-pass').value = '';
+    generateCaptcha();
+  }
 
   btnOpenLogin.addEventListener('click', () => {
-    loginErrorEl.classList.add('hidden');
+    showLoginView('');
     document.getElementById('login-id-input').value = '';
     document.getElementById('login-pass-input').value = '';
     loginModal.classList.add('open');
@@ -1047,6 +1262,10 @@
   document.getElementById('btn-close-login').addEventListener('click', () => {
     loginModal.classList.remove('open');
   });
+  document.getElementById('btn-open-forgot').addEventListener('click', showForgotView);
+  document.getElementById('btn-back-to-login').addEventListener('click', () => showLoginView(''));
+  document.getElementById('btn-refresh-captcha').addEventListener('click', generateCaptcha);
+
   btnLogout.addEventListener('click', () => {
     currentUser = null;
     localStorage.removeItem(SESSION_KEY);
@@ -1061,17 +1280,68 @@
     if (!user) {
       loginErrorEl.textContent = 'Invalid Login ID or password.';
       loginErrorEl.classList.remove('hidden');
+      if (loginSuccessEl) loginSuccessEl.classList.add('hidden');
       return;
     }
     if (!user.isActive) {
       loginErrorEl.textContent = 'This account has been deactivated by the Admin Principal.';
       loginErrorEl.classList.remove('hidden');
+      if (loginSuccessEl) loginSuccessEl.classList.add('hidden');
       return;
     }
     currentUser = user;
     localStorage.setItem(SESSION_KEY, user.loginId);
     loginModal.classList.remove('open');
     renderAuthUI();
+  });
+
+  document.getElementById('forgot-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const id = document.getElementById('forgot-login-id').value.trim().toLowerCase();
+    const captchaEntered = document.getElementById('forgot-captcha-input').value.trim().toUpperCase();
+    const newPass = document.getElementById('forgot-new-pass').value;
+    const confirmPass = document.getElementById('forgot-confirm-pass').value;
+
+    if (!captchaEntered || captchaEntered !== currentCaptchaCode.toUpperCase()) {
+      forgotErrorEl.textContent = 'Incorrect CAPTCHA code. Please try the new security code shown.';
+      forgotErrorEl.classList.remove('hidden');
+      document.getElementById('forgot-captcha-input').value = '';
+      generateCaptcha();
+      return;
+    }
+
+    const user = db.users.find(u => u.loginId.toLowerCase() === id);
+    if (!user) {
+      forgotErrorEl.textContent = 'No account found with that Login ID.';
+      forgotErrorEl.classList.remove('hidden');
+      generateCaptcha();
+      return;
+    }
+
+    if (!user.isActive) {
+      forgotErrorEl.textContent = 'This account is deactivated. Contact Admin Principal.';
+      forgotErrorEl.classList.remove('hidden');
+      return;
+    }
+
+    if (newPass.length < 4) {
+      forgotErrorEl.textContent = 'New password must be at least 4 characters long.';
+      forgotErrorEl.classList.remove('hidden');
+      return;
+    }
+
+    if (newPass !== confirmPass) {
+      forgotErrorEl.textContent = 'New password and confirm password do not match.';
+      forgotErrorEl.classList.remove('hidden');
+      return;
+    }
+
+    user.password = newPass;
+    saveDb(db);
+    document.getElementById('login-id-input').value = user.loginId;
+    document.getElementById('login-pass-input').value = '';
+    showLoginView(`Password reset successful for ${user.loginId}. Please sign in with your new password.`);
+    await publishCloudEvent({ action: 'PASSWORD_RESET', loginId: user.loginId, newPassword: newPass });
   });
 
   // Admin Console Handlers

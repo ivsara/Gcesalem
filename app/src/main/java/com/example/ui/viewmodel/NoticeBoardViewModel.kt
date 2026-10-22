@@ -197,6 +197,26 @@ class NoticeBoardViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
+    fun clearAuthError() {
+        _authError.value = null
+    }
+
+    fun resetPassword(
+        loginId: String,
+        newPasswordPlain: String,
+        onResult: (Boolean, String) -> Unit
+    ) {
+        viewModelScope.launch {
+            _authError.value = null
+            val success = repository.resetPassword(loginId, newPasswordPlain)
+            if (success) {
+                onResult(true, "Password reset successful for ${loginId.trim()}. Please sign in with your new password.")
+            } else {
+                onResult(false, "Account not found or inactive for Login ID '${loginId.trim()}'.")
+            }
+        }
+    }
+
     fun switchToUser(user: UserEntity?) {
         _currentUser.value = user
         if (user != null) {

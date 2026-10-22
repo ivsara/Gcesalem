@@ -1,8 +1,18 @@
 package com.example.ui.screens
 
+import android.content.ContentValues
+import android.content.Context
+import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
+import android.provider.OpenableColumns
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -37,7 +47,9 @@ import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PinDrop
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.TableChart
+import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
@@ -104,9 +116,14 @@ import com.example.ui.theme.PriorityLowGreenBg
 import com.example.ui.theme.PriorityMedAmber
 import com.example.ui.theme.PriorityMedAmberBg
 import com.example.ui.viewmodel.NoticeBoardViewModel
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.nativeCanvas
+import java.io.File
+import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.random.Random
 
 fun formatTimestamp(ms: Long): String {
     if (ms <= 0L) return "Never"
@@ -118,6 +135,115 @@ fun formatShortDate(ms: Long): String {
     if (ms <= 0L) return "No Expiry"
     val sdf = SimpleDateFormat("dd MMM yyyy", Locale.getDefault())
     return sdf.format(Date(ms))
+}
+
+private fun buildValidPdfBytes(title: String, snippet: String): ByteArray {
+    val cleanTitle = title.replace(Regex("[()\\\\]"), "")
+    val lines = listOf(
+        "GOVERNMENT COLLEGE OF ENGINEERING, SALEM - 636011",
+        "OFFICIAL DIGITAL NOTICE BOARD ATTACHMENT",
+        "------------------------------------------------------------",
+        "File: $cleanTitle",
+        "------------------------------------------------------------"
+    ) + snippet.lines().map { it.replace(Regex("[()\\\\]"), "").take(80) }
+
+    var y = 760
+    val streamBuilder = StringBuilder("BT\n/F1 11 Tf\n")
+    lines.take(35).forEach { line ->
+        streamBuilder.append("1 0 0 1 50 $y Tm ($line) Tj\n")
+        y -= 18
+    }
+    streamBuilder.append("ET")
+    val stream = streamBuilder.toString()
+
+    val pdf = "%PDF-1.4\n" +
+            "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n" +
+            "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n" +
+            "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj\n" +
+            "4 0 obj << /Length ${stream.length} >> stream\n$stream\nendstream endobj\n" +
+            "5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n" +
+            "trailer << /Root 1 0 R >>\n%%EOF"
+    return pdf.toByteArray(Charsets.UTF_8)
+}
+
+fun saveAttachmentToDownloads(context: Context, attachment: AttachmentEntity) {
+    try {
+        val filename = attachment.originalFilename.ifBlank { "GCE_Salem_Circular.pdf" }
+        val ext = filename.substringAfterLast('.', "pdf").lowercase()
+        val mimeType = when (ext) {
+            "pdf" -> "application/pdf"
+            "png" -> "image/png"
+            "jpg", "jpeg" -> "image/jpeg"
+            "xls", "xlsx", "csv" -> "text/csv"
+            "doc", "docx" -> "application/msword"
+            else -> "application/octet-stream"
+        }
+
+        // Check if a real uploaded file was saved in internal storage
+        val localDir = File(context.filesDir, "attachments")
+        val localFile = File(localDir, attachment.storedFilename)
+        val bytesToWrite: ByteArray = if (localFile.exists() && localFile.isFile) {
+            localFile.readBytes()
+        } else if (ext == "pdf") {
+            buildValidPdfBytes(
+                filename,
+                attachment.previewSnippet.ifBlank { "Official GCE Salem Circular Document" }
+            )
+        } else {
+            val content = "GOVERNMENT COLLEGE OF ENGINEERING, SALEM\n" +
+                    "Document: $filename\n\n" +
+                    attachment.previewSnippet.ifBlank { "Official GCE Salem Attachment" }
+            content.toByteArray(Charsets.UTF_8)
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val values = ContentValues().apply {
+                put(MediaStore.Downloads.DISPLAY_NAME, filename)
+                put(MediaStore.Downloads.MIME_TYPE, mimeType)
+                put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                put(MediaStore.Downloads.IS_PENDING, 1)
+            }
+            val resolver = context.contentResolver
+            val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+            if (uri != null) {
+                resolver.openOutputStream(uri)?.use { out ->
+                    out.write(bytesToWrite)
+                    out.flush()
+                }
+                values.clear()
+                values.put(MediaStore.Downloads.IS_PENDING, 0)
+                resolver.update(uri, values, null, null)
+                Toast.makeText(
+                    context,
+                    "Downloaded '$filename' to Downloads folder (${bytesToWrite.size / 1024 + 1} KB)",
+                    Toast.LENGTH_LONG
+                ).show()
+                return
+            }
+        }
+
+        // Fallback to app external Downloads directory
+        val targetDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: context.filesDir
+        if (!targetDir.exists()) targetDir.mkdirs()
+        val outFile = File(targetDir, filename)
+        FileOutputStream(outFile).use { it.write(bytesToWrite) }
+        Toast.makeText(
+            context,
+            "Downloaded '$filename' (${outFile.absolutePath})",
+            Toast.LENGTH_LONG
+        ).show()
+    } catch (e: Exception) {
+        Toast.makeText(
+            context,
+            "Download failed: ${e.localizedMessage ?: "Unable to write file"}",
+            Toast.LENGTH_SHORT
+        ).show()
+    }
+}
+
+fun generateCaptchaCode(length: Int = 6): String {
+    val chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    return (1..length).map { chars[Random.nextInt(chars.length)] }.joinToString("")
 }
 
 @Composable
@@ -336,36 +462,42 @@ fun NoticeCard(
                 overflow = TextOverflow.Ellipsis
             )
 
-            // Attachments Preview summary chips
+            // Attachments Preview & Direct Download chips
             if (attachments.isNotEmpty()) {
+                val cardContext = LocalContext.current
                 Spacer(modifier = Modifier.height(8.dp))
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.AttachFile,
-                        contentDescription = "Attachments",
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(14.dp)
-                    )
-                    Text(
-                        text = "${attachments.size} Attachment${if (attachments.size > 1) "s" else ""}:",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    attachments.take(2).forEach { att ->
+                    attachments.forEach { att ->
                         Surface(
-                            color = MaterialTheme.colorScheme.surfaceVariant,
-                            shape = RoundedCornerShape(4.dp)
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
+                            shape = RoundedCornerShape(6.dp),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)),
+                            modifier = Modifier
+                                .clickable { saveAttachmentToDownloads(cardContext, att) }
+                                .testTag("card_download_att_${att.id}")
                         ) {
-                            Text(
-                                text = "${att.fileType}: ${att.originalFilename.take(16)}...",
-                                fontSize = 10.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
-                            )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Download,
+                                    contentDescription = "Download ${att.originalFilename}",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = att.originalFilename.take(24),
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
                         }
                     }
                 }
@@ -630,13 +762,11 @@ fun NoticeDetailDialog(
                                     }
                                     IconButton(
                                         onClick = {
-                                            Toast.makeText(
-                                                context,
-                                                "Downloaded: ${att.originalFilename} (Saved to Downloads)",
-                                                Toast.LENGTH_LONG
-                                            ).show()
+                                            saveAttachmentToDownloads(context, att)
                                         },
-                                        modifier = Modifier.size(36.dp)
+                                        modifier = Modifier
+                                            .size(36.dp)
+                                            .testTag("detail_download_att_${att.id}")
                                     ) {
                                         Icon(
                                             imageVector = Icons.Default.Download,
@@ -754,10 +884,23 @@ fun NoticeDetailDialog(
             },
             confirmButton = {
                 Button(
-                    onClick = { previewAttachment = null },
+                    onClick = {
+                        saveAttachmentToDownloads(context, att)
+                    },
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
                 ) {
-                    Text("Done")
+                    Icon(
+                        imageVector = Icons.Default.Download,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Download File")
+                }
+            },
+            dismissButton = {
+                OutlinedButton(onClick = { previewAttachment = null }) {
+                    Text("Close")
                 }
             }
         )
@@ -1001,8 +1144,73 @@ fun NoticeFormDialog(
                     }
                 }
 
-                // Attachments Simulation Manager
+                // Upload Real File from Device + Quick Attachment Templates
+                val filePickerLauncher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.GetContent()
+                ) { uri: Uri? ->
+                    if (uri != null) {
+                        try {
+                            var displayName = "Uploaded_File_${System.currentTimeMillis()}.pdf"
+                            var fileSize = 102400L
+                            context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                                val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                                val sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE)
+                                if (cursor.moveToFirst()) {
+                                    if (nameIdx >= 0) {
+                                        displayName = cursor.getString(nameIdx) ?: displayName
+                                    }
+                                    if (sizeIdx >= 0 && !cursor.isNull(sizeIdx)) {
+                                        fileSize = cursor.getLong(sizeIdx)
+                                    }
+                                }
+                            }
+                            val storedName = "${System.currentTimeMillis()}_${displayName.replace(Regex("[^a-zA-Z0-9._-]"), "_")}"
+                            val attachDir = File(context.filesDir, "attachments")
+                            if (!attachDir.exists()) attachDir.mkdirs()
+                            val destFile = File(attachDir, storedName)
+                            context.contentResolver.openInputStream(uri)?.use { input ->
+                                FileOutputStream(destFile).use { output ->
+                                    input.copyTo(output)
+                                }
+                            }
+                            val ext = displayName.substringAfterLast('.', "PDF").uppercase()
+                            val normalizedType = when (ext) {
+                                "JPG", "JPEG", "PNG", "WEBP" -> "IMAGE"
+                                "XLS", "XLSX", "CSV" -> "XLS"
+                                "DOC", "DOCX" -> "DOC"
+                                else -> "PDF"
+                            }
+                            attachments.add(
+                                AttachmentEntity(
+                                    noticeId = 0,
+                                    originalFilename = displayName,
+                                    storedFilename = storedName,
+                                    fileType = normalizedType,
+                                    fileSizeBytes = fileSize,
+                                    uploadedBy = currentUser.loginId,
+                                    previewSnippet = "Uploaded document '$displayName' (${fileSize / 1024 + 1} KB) by ${currentUser.fullName}."
+                                )
+                            )
+                            Toast.makeText(context, "Attached: $displayName", Toast.LENGTH_SHORT).show()
+                        } catch (e: Exception) {
+                            Toast.makeText(context, "Could not attach file: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+
                 Text(text = "Attachments (${attachments.size})", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                Button(
+                    onClick = { filePickerLauncher.launch("*/*") },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("upload_device_file_button"),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondaryContainer, contentColor = MaterialTheme.colorScheme.onSecondaryContainer)
+                ) {
+                    Icon(imageVector = Icons.Default.UploadFile, contentDescription = "Upload File", modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Upload File / Document from Device", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                }
+
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier.fillMaxWidth()
@@ -1165,15 +1373,105 @@ fun NoticeFormDialog(
 }
 
 @Composable
+fun CaptchaChallengeBox(
+    captchaCode: String,
+    onRefresh: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Surface(
+            shape = RoundedCornerShape(8.dp),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+            color = Color(0xFFEEF4FF),
+            modifier = Modifier
+                .weight(1f)
+                .height(54.dp)
+        ) {
+            Canvas(modifier = Modifier.fillMaxWidth().height(54.dp)) {
+                val w = size.width
+                val h = size.height
+
+                // Security noise lines
+                for (i in 0..4) {
+                    val startY = (h * ((i * 23) % 100)) / 100f
+                    val endY = (h * (((i + 2) * 37) % 100)) / 100f
+                    drawLine(
+                        color = if (i % 2 == 0) Color(0x55155EEF) else Color(0x440F172A),
+                        start = Offset(12f, startY),
+                        end = Offset(w - 12f, endY),
+                        strokeWidth = 3f
+                    )
+                }
+
+                // Draw CAPTCHA characters with slight vertical offset
+                val paint = android.graphics.Paint().apply {
+                    isAntiAlias = true
+                    textSize = 46f
+                    typeface = android.graphics.Typeface.create(
+                        android.graphics.Typeface.MONOSPACE,
+                        android.graphics.Typeface.BOLD
+                    )
+                }
+
+                val step = w / (captchaCode.length + 1)
+                captchaCode.forEachIndexed { index, ch ->
+                    paint.color = if (index % 2 == 0) {
+                        android.graphics.Color.rgb(15, 23, 42)
+                    } else {
+                        android.graphics.Color.rgb(21, 94, 239)
+                    }
+                    val x = step * (index + 0.7f)
+                    val yOffset = if (index % 2 == 0) -6f else 8f
+                    val y = (h / 2f) + 14f + yOffset
+                    drawContext.canvas.nativeCanvas.drawText(ch.toString(), x, y, paint)
+                }
+            }
+        }
+
+        OutlinedButton(
+            onClick = onRefresh,
+            modifier = Modifier
+                .height(54.dp)
+                .testTag("refresh_captcha_button")
+        ) {
+            Icon(
+                imageVector = Icons.Default.Refresh,
+                contentDescription = "New CAPTCHA Code",
+                modifier = Modifier.size(18.dp)
+            )
+            Spacer(modifier = Modifier.width(4.dp))
+            Text("New", fontSize = 12.sp)
+        }
+    }
+}
+
+@Composable
 fun LoginDialog(
     viewModel: NoticeBoardViewModel,
     allUsers: List<UserEntity>,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
+    var isForgotMode by remember { mutableStateOf(false) }
+
+    // Sign-In state
     var loginId by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var passwordVisible by remember { mutableStateOf(false) }
+    var resetSuccessBanner by remember { mutableStateOf<String?>(null) }
+
+    // Forgot Password + CAPTCHA state
+    var forgotLoginId by remember { mutableStateOf("") }
+    var captchaCode by remember { mutableStateOf(generateCaptchaCode()) }
+    var captchaInput by remember { mutableStateOf("") }
+    var newPassword by remember { mutableStateOf("") }
+    var confirmPassword by remember { mutableStateOf("") }
+    var forgotError by remember { mutableStateOf<String?>(null) }
+
     val authError by viewModel.authError.collectAsState()
 
     AlertDialog(
@@ -1186,7 +1484,11 @@ fun LoginDialog(
                     tint = MaterialTheme.colorScheme.primary
                 )
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("Portal Sign In", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                Text(
+                    text = if (isForgotMode) "Forgot Password" else "Portal Sign In",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 18.sp
+                )
             }
         },
         text = {
@@ -1196,86 +1498,267 @@ fun LoginDialog(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Text(
-                    text = "Enter your college Login ID and password to access restricted department circulars or manage notices.",
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                if (!isForgotMode) {
+                    Text(
+                        text = "Enter your college Login ID and password to access restricted department circulars or manage notices.",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
 
-                // Error alert
-                if (authError != null) {
-                    Surface(
-                        color = PriorityHighRedBg,
-                        shape = RoundedCornerShape(6.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(
-                            text = authError ?: "",
-                            color = PriorityHighRed,
-                            fontSize = 12.sp,
-                            modifier = Modifier.padding(8.dp)
-                        )
-                    }
-                }
-
-                // Login ID Input
-                OutlinedTextField(
-                    value = loginId,
-                    onValueChange = { loginId = it },
-                    label = { Text("Login ID / Roll No") },
-                    leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("login_id_input"),
-                    singleLine = true
-                )
-
-                // Password Input
-                OutlinedTextField(
-                    value = password,
-                    onValueChange = { password = it },
-                    label = { Text("Password") },
-                    leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
-                    trailingIcon = {
-                        IconButton(onClick = { passwordVisible = !passwordVisible }) {
-                            Icon(
-                                imageVector = if (passwordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                contentDescription = "Toggle password"
+                    if (resetSuccessBanner != null) {
+                        Surface(
+                            color = PriorityLowGreenBg,
+                            shape = RoundedCornerShape(6.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = resetSuccessBanner ?: "",
+                                color = PriorityLowGreen,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.padding(8.dp)
                             )
                         }
-                    },
-                    visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("login_password_input"),
-                    singleLine = true
-                )
+                    }
+
+                    // Error alert
+                    if (authError != null) {
+                        Surface(
+                            color = PriorityHighRedBg,
+                            shape = RoundedCornerShape(6.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = authError ?: "",
+                                color = PriorityHighRed,
+                                fontSize = 12.sp,
+                                modifier = Modifier.padding(8.dp)
+                            )
+                        }
+                    }
+
+                    // Login ID Input
+                    OutlinedTextField(
+                        value = loginId,
+                        onValueChange = { loginId = it },
+                        label = { Text("Login ID / Roll No") },
+                        leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("login_id_input"),
+                        singleLine = true
+                    )
+
+                    // Password Input
+                    OutlinedTextField(
+                        value = password,
+                        onValueChange = { password = it },
+                        label = { Text("Password") },
+                        leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
+                        trailingIcon = {
+                            IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                                Icon(
+                                    imageVector = if (passwordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                    contentDescription = "Toggle password"
+                                )
+                            }
+                        },
+                        visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("login_password_input"),
+                        singleLine = true
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        TextButton(
+                            onClick = {
+                                viewModel.clearAuthError()
+                                forgotLoginId = loginId.trim()
+                                captchaCode = generateCaptchaCode()
+                                captchaInput = ""
+                                newPassword = ""
+                                confirmPassword = ""
+                                forgotError = null
+                                isForgotMode = true
+                            },
+                            modifier = Modifier.testTag("forgot_password_button")
+                        ) {
+                            Text(
+                                text = "Forgot Password?",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                } else {
+                    Text(
+                        text = "Verify your Login ID and enter the security CAPTCHA code below to set a new password.",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    if (forgotError != null) {
+                        Surface(
+                            color = PriorityHighRedBg,
+                            shape = RoundedCornerShape(6.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = forgotError ?: "",
+                                color = PriorityHighRed,
+                                fontSize = 12.sp,
+                                modifier = Modifier.padding(8.dp)
+                            )
+                        }
+                    }
+
+                    OutlinedTextField(
+                        value = forgotLoginId,
+                        onValueChange = { forgotLoginId = it },
+                        label = { Text("Login ID (e.g. principal, hod_cse)") },
+                        leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("forgot_login_id_input"),
+                        singleLine = true
+                    )
+
+                    Text(
+                        text = "Security CAPTCHA Verification",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+
+                    CaptchaChallengeBox(
+                        captchaCode = captchaCode,
+                        onRefresh = {
+                            captchaCode = generateCaptchaCode()
+                            captchaInput = ""
+                        }
+                    )
+
+                    OutlinedTextField(
+                        value = captchaInput,
+                        onValueChange = { captchaInput = it.uppercase() },
+                        label = { Text("Enter CAPTCHA Code Shown Above") },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("forgot_captcha_input"),
+                        singleLine = true
+                    )
+
+                    OutlinedTextField(
+                        value = newPassword,
+                        onValueChange = { newPassword = it },
+                        label = { Text("New Password") },
+                        leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("forgot_new_password_input"),
+                        singleLine = true
+                    )
+
+                    OutlinedTextField(
+                        value = confirmPassword,
+                        onValueChange = { confirmPassword = it },
+                        label = { Text("Confirm New Password") },
+                        leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("forgot_confirm_password_input"),
+                        singleLine = true
+                    )
+                }
             }
         },
         confirmButton = {
-            Button(
-                onClick = {
-                    if (loginId.isBlank() || password.isBlank()) {
-                        Toast.makeText(context, "Please enter login ID and password", Toast.LENGTH_SHORT).show()
-                        return@Button
-                    }
-                    viewModel.login(loginId, password) { success ->
-                        if (success) {
-                            Toast.makeText(context, "Welcome to GCE Notice Board!", Toast.LENGTH_SHORT).show()
-                            onDismiss()
+            if (!isForgotMode) {
+                Button(
+                    onClick = {
+                        if (loginId.isBlank() || password.isBlank()) {
+                            Toast.makeText(context, "Please enter login ID and password", Toast.LENGTH_SHORT).show()
+                            return@Button
                         }
-                    }
-                },
-                modifier = Modifier.testTag("login_submit_button"),
-                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-            ) {
-                Text("Sign In")
+                        viewModel.login(loginId, password) { success ->
+                            if (success) {
+                                Toast.makeText(context, "Welcome to GCE Notice Board!", Toast.LENGTH_SHORT).show()
+                                onDismiss()
+                            }
+                        }
+                    },
+                    modifier = Modifier.testTag("login_submit_button"),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                ) {
+                    Text("Sign In")
+                }
+            } else {
+                Button(
+                    onClick = {
+                        forgotError = null
+                        if (forgotLoginId.isBlank()) {
+                            forgotError = "Please enter your Login ID."
+                            return@Button
+                        }
+                        if (captchaInput.trim().uppercase() != captchaCode.uppercase()) {
+                            forgotError = "Incorrect CAPTCHA code. Please try the new code generated."
+                            captchaCode = generateCaptchaCode()
+                            captchaInput = ""
+                            return@Button
+                        }
+                        if (newPassword.length < 4) {
+                            forgotError = "New password must be at least 4 characters."
+                            return@Button
+                        }
+                        if (newPassword != confirmPassword) {
+                            forgotError = "New password and confirm password do not match."
+                            return@Button
+                        }
+                        viewModel.resetPassword(forgotLoginId, newPassword) { success, msg ->
+                            if (success) {
+                                loginId = forgotLoginId.trim()
+                                password = ""
+                                resetSuccessBanner = msg
+                                isForgotMode = false
+                            } else {
+                                forgotError = msg
+                                captchaCode = generateCaptchaCode()
+                                captchaInput = ""
+                            }
+                        }
+                    },
+                    modifier = Modifier.testTag("forgot_submit_button"),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                ) {
+                    Text("Verify & Reset Password")
+                }
             }
         },
         dismissButton = {
-            OutlinedButton(onClick = onDismiss) {
-                Text("Cancel")
+            if (!isForgotMode) {
+                OutlinedButton(onClick = onDismiss) {
+                    Text("Cancel")
+                }
+            } else {
+                OutlinedButton(
+                    onClick = {
+                        forgotError = null
+                        isForgotMode = false
+                    },
+                    modifier = Modifier.testTag("back_to_signin_button")
+                ) {
+                    Text("Back to Sign In")
+                }
             }
         }
     )

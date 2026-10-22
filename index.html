@@ -353,29 +353,71 @@
     </section>
   </main>
 
-  <!-- Sign In Modal -->
+  <!-- Sign In & Forgot Password Modal -->
   <div class="modal-backdrop" id="login-modal">
     <div class="modal-box">
       <div class="modal-header">
-        <h3>Sign in to GCE Salem Portal</h3>
+        <h3 id="login-modal-title">Sign in to GCE Salem Portal</h3>
         <button class="icon-button" id="btn-close-login" type="button">×</button>
       </div>
-      <p style="font-size:12px;color:#667085;margin-top:0;">Enter your college Login ID and password to sign in.</p>
 
-      <div id="login-error" class="hidden" style="background:#fff1f0;border:1px solid #ffd7d3;color:#b42318;padding:10px;border-radius:8px;font-size:12px;margin-bottom:12px;"></div>
-      <form id="login-form" class="form-grid">
-        <label class="form-field field-wide">
-          <span>Login ID</span>
-          <input required id="login-id-input" autocomplete="username" placeholder="Enter your Login ID">
-        </label>
-        <label class="form-field field-wide">
-          <span>Password</span>
-          <input required type="password" id="login-pass-input" placeholder="••••••••">
-        </label>
-        <div class="field-wide">
-          <button class="button button-primary" type="submit" style="width:100%;">Sign In</button>
-        </div>
-      </form>
+      <!-- Standard Sign In View -->
+      <div id="login-view">
+        <p style="font-size:12px;color:#667085;margin-top:0;">Enter your college Login ID and password to sign in.</p>
+        <div id="login-error" class="hidden" style="background:#fff1f0;border:1px solid #ffd7d3;color:#b42318;padding:10px;border-radius:8px;font-size:12px;margin-bottom:12px;"></div>
+        <div id="login-success" class="hidden" style="background:#ecfdf3;border:1px solid #abefc6;color:#067647;padding:10px;border-radius:8px;font-size:12px;margin-bottom:12px;"></div>
+        <form id="login-form" class="form-grid">
+          <label class="form-field field-wide">
+            <span>Login ID</span>
+            <input required id="login-id-input" autocomplete="username" placeholder="Enter your Login ID">
+          </label>
+          <label class="form-field field-wide">
+            <span>Password</span>
+            <input required type="password" id="login-pass-input" autocomplete="current-password" placeholder="••••••••">
+          </label>
+          <div class="field-wide" style="display:flex;justify-content:flex-end;margin-top:-4px;">
+            <button type="button" id="btn-open-forgot" style="background:none;border:none;color:var(--accent);font-size:12px;font-weight:700;cursor:pointer;padding:2px 0;text-decoration:underline;">Forgot Password?</button>
+          </div>
+          <div class="field-wide">
+            <button class="button button-primary" type="submit" style="width:100%;">Sign In</button>
+          </div>
+        </form>
+      </div>
+
+      <!-- Forgot Password with CAPTCHA View -->
+      <div id="forgot-view" class="hidden">
+        <p style="font-size:12px;color:#667085;margin-top:0;">Verify your Login ID and complete the security CAPTCHA challenge to reset your password.</p>
+        <div id="forgot-error" class="hidden" style="background:#fff1f0;border:1px solid #ffd7d3;color:#b42318;padding:10px;border-radius:8px;font-size:12px;margin-bottom:12px;"></div>
+        <form id="forgot-form" class="form-grid">
+          <label class="form-field field-wide">
+            <span>Login ID <b>*</b></span>
+            <input required id="forgot-login-id" autocomplete="username" placeholder="Enter your Login ID (e.g. principal, hod_cse, faculty_cse1)">
+          </label>
+
+          <div class="form-field field-wide">
+            <span>Security CAPTCHA Verification <b>*</b></span>
+            <div style="display:flex;align-items:center;gap:10px;margin-top:4px;margin-bottom:6px;">
+              <canvas id="captcha-canvas" width="190" height="52" style="border-radius:8px;border:1px solid #d0d5dd;background:#f8fafc;flex-shrink:0;"></canvas>
+              <button type="button" class="button button-secondary" id="btn-refresh-captcha" title="Generate new CAPTCHA" style="padding:8px 12px;font-size:12px;">↻ New Code</button>
+            </div>
+            <input required id="forgot-captcha-input" autocomplete="off" placeholder="Enter the 6-character CAPTCHA code shown above">
+          </div>
+
+          <label class="form-field">
+            <span>New Password <b>*</b></span>
+            <input required type="password" id="forgot-new-pass" placeholder="New password">
+          </label>
+          <label class="form-field">
+            <span>Confirm Password <b>*</b></span>
+            <input required type="password" id="forgot-confirm-pass" placeholder="Confirm password">
+          </label>
+
+          <div class="field-wide" style="display:flex;gap:10px;margin-top:4px;">
+            <button class="button button-primary" type="submit" style="flex:1;">Reset Password</button>
+            <button class="button button-quiet" type="button" id="btn-back-to-login">← Back to Sign In</button>
+          </div>
+        </form>
+      </div>
     </div>
   </div>
 
@@ -388,7 +430,7 @@
       </div>
       <div id="preview-body" style="font-size:12.5px;line-height:1.6;"></div>
       <div style="margin-top:16px;display:flex;justify-content:flex-end;gap:10px;">
-        <a class="button button-primary" id="preview-download-btn" download>↧ Download File</a>
+        <button class="button button-primary" id="preview-download-btn" type="button">↧ Download File</button>
       </div>
     </div>
   </div>

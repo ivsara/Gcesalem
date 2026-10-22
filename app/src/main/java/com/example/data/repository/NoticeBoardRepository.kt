@@ -79,6 +79,16 @@ class NoticeBoardRepository(private val database: AppDatabase) {
         }
     }
 
+    suspend fun resetPassword(loginId: String, newPasswordPlain: String): Boolean {
+        val user = userDao.getUserByLoginId(loginId.trim().lowercase())
+            ?: userDao.getUserByLoginId(loginId.trim())
+            ?: return false
+        if (!user.isActive) return false
+        val updated = user.copy(passwordHash = SecurityUtils.hashPassword(newPasswordPlain))
+        userDao.updateUser(updated)
+        return true
+    }
+
     suspend fun insertUser(user: UserEntity): Long = userDao.insertUser(user)
 
     suspend fun updateUser(user: UserEntity) = userDao.updateUser(user)
