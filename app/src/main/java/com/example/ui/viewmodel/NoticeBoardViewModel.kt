@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -260,10 +261,11 @@ class NoticeBoardViewModel(application: Application) : AndroidViewModel(applicat
         pollingJob?.cancel()
         pollingJob = viewModelScope.launch {
             while (isActive) {
-                val intervalSec = (collegeSettings.value?.refreshIntervalSeconds ?: 10).coerceIn(5, 60)
+                val intervalSec = (collegeSettings.value?.refreshIntervalSeconds ?: 15).coerceIn(10, 60)
                 delay(intervalSec * 1000L)
                 if (_isPollingActive.value) {
                     CloudNoticeSync.pullAndApplyRemoteNotices(repository)
+                    CloudNoticeSync.syncLocalNoticesToCloud(rawNotices.value, repository)
                     _lastRefreshedAt.value = System.currentTimeMillis()
                 }
             }
@@ -278,9 +280,15 @@ class NoticeBoardViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     fun manualRefresh(onDone: ((Int) -> Unit)? = null) {
+        // Reset restrictive filters on manual refresh so newly synced notices across all departments/categories show up immediately
+        searchQuery.value = ""
+        selectedDepartmentFilter.value = "ALL"
+        selectedCategoryFilter.value = "ALL"
+        showExpiredOnly.value = false
         _lastRefreshedAt.value = System.currentTimeMillis()
         viewModelScope.launch {
             val count = CloudNoticeSync.pullAndApplyRemoteNotices(repository)
+            CloudNoticeSync.syncLocalNoticesToCloud(rawNotices.value, repository)
             _lastRefreshedAt.value = System.currentTimeMillis()
             onDone?.invoke(count)
         }
@@ -333,20 +341,22 @@ class NoticeBoardViewModel(application: Application) : AndroidViewModel(applicat
             val noticeId = repository.insertNotice(notice)
             val savedNotice = notice.copy(id = noticeId)
 
-            val savedAttachments = attachments.map { att ->
-                val toInsert = att.copy(noticeId = noticeId, uploadedBy = user.loginId)
-                val attId = repository.insertAttachment(toInsert)
-                toInsert.copy(id = attId)
+            val savedAttachments = attachments.mapIndexed { idx, att ->
+                val uniqueAttId = if (att.id > 1000L) att.id else (now + idx + 1L)
+                val toInsert = att.copy(id = uniqueAttId, noticeId = noticeId, uploadedBy = user.loginId)
+                repository.insertAttachment(toInsert)
+                toInsert
             }
+
+            _lastRefreshedAt.value = System.currentTimeMillis()
+            onComplete(true)
 
             CloudNoticeSync.pushUpsert(
                 notice = savedNotice,
                 authorLoginId = user.loginId,
                 attachments = savedAttachments
             )
-
             _lastRefreshedAt.value = System.currentTimeMillis()
-            onComplete(true)
         }
     }
 
@@ -366,25 +376,35 @@ class NoticeBoardViewModel(application: Application) : AndroidViewModel(applicat
         }
 
         viewModelScope.launch {
-            val updated = notice.copy(updatedAt = System.currentTimeMillis())
+            val now = System.currentTimeMillis()
+            val updated = notice.copy(updatedAt = now)
             repository.updateNotice(updated)
+            val existingAtts: List<AttachmentEntity> = try {
+                repository.getAttachmentsForNotice(notice.id).firstOrNull() ?: emptyList()
+            } catch (_: Exception) {
+                emptyList()
+            }
             val savedAtts = mutableListOf<AttachmentEntity>()
-            newAttachments.forEach { att ->
+            savedAtts.addAll(existingAtts)
+            newAttachments.forEachIndexed { idx, att ->
                 if (att.id == 0L) {
-                    val toInsert = att.copy(noticeId = notice.id, uploadedBy = user.loginId)
-                    val attId = repository.insertAttachment(toInsert)
-                    savedAtts.add(toInsert.copy(id = attId))
-                } else {
+                    val uniqueAttId = now + idx + 1L
+                    val toInsert = att.copy(id = uniqueAttId, noticeId = notice.id, uploadedBy = user.loginId)
+                    repository.insertAttachment(toInsert)
+                    savedAtts.add(toInsert)
+                } else if (savedAtts.none { it.id == att.id }) {
                     savedAtts.add(att)
                 }
             }
+            _lastRefreshedAt.value = System.currentTimeMillis()
+            onComplete(true)
+
             CloudNoticeSync.pushUpsert(
                 notice = updated,
                 authorLoginId = user.loginId,
                 attachments = savedAtts
             )
             _lastRefreshedAt.value = System.currentTimeMillis()
-            onComplete(true)
         }
     }
 

@@ -1,8 +1,10 @@
 (() => {
   const STORAGE_KEY = 'gce_salem_notice_board_db_v4';
   const SESSION_KEY = 'gce_salem_current_user_v4';
-  const CLOUD_SYNC_TOPIC = 'gce_salem_notice_board_sync_v4';
+  const CLOUD_SYNC_TOPIC = 'gce_salem_notice_sync_v5';
   const CLOUD_SYNC_URL = `https://ntfy.sh/${CLOUD_SYNC_TOPIC}`;
+  const LEGACY_SYNC_TOPIC = 'gce_salem_notice_board_sync_v4';
+  const LEGACY_SYNC_URL = `https://ntfy.sh/${LEGACY_SYNC_TOPIC}`;
   const CLOUD_FILES_TOPIC = 'gce_salem_notice_files_v4';
   const CLOUD_FILES_URL = `https://ntfy.sh/${CLOUD_FILES_TOPIC}`;
   const CLOUD_BLOBS_TOPIC = 'gce_salem_notice_blobs_v4';
@@ -12,6 +14,11 @@
   const cloudBlobComplete = {}; // attId -> full dataUrl string
   const cloudFilesByMeta = []; // [{ name, baseKey, size, url }]
   const processedBlobMsgIds = new Set();
+  const processedSyncAttachmentPayloads = {}; // env.id -> parsed JSON object
+  const syncedCloudNoticeIds = new Set();
+  let legacyV4Imported = false;
+  const broadcastChannel =
+    typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('gce_salem_notice_channel_v5') : null;
 
   const escapeHtml = val =>
     String(val ?? '').replace(/[&<>"']/g, c => ({
@@ -1077,7 +1084,7 @@
 
   // ---------------- CLOUD SYNC ACROSS PHONES ----------------
 
-  function applyCloudPayload(payload) {
+  function applyCloudPayload(payload, envTimeMs = 0, maxEnvTimeMs = 0) {
     if (!payload || !payload.action) return false;
     db.deletedIds = db.deletedIds || [];
 
@@ -1092,20 +1099,37 @@
     if (payload.action === 'UPSERT' && payload.notice) {
       const incoming = payload.notice;
       const id = Number(incoming.id);
-      if (db.deletedIds.includes(id)) return false;
+      if (!id || db.deletedIds.includes(id)) return false;
+
+      const now = nowMs();
+      const rawPublishedAt = Number(incoming.publishedAt || now);
+      const rawExpiresAt = Number(incoming.expiresAt || 0);
+      const relativeAgeMs =
+        maxEnvTimeMs > 0 && envTimeMs > 0 ? Math.max(0, maxEnvTimeMs - envTimeMs) : 0;
+      const isClockSkewed = Math.abs(now - rawPublishedAt) > 12 * 3600 * 1000;
+      const normalizedPublishedAt = isClockSkewed ? now - relativeAgeMs : rawPublishedAt;
+      let normalizedExpiresAt = 0;
+      if (rawExpiresAt > 0) {
+        if (rawExpiresAt >= rawPublishedAt) {
+          const durationMs = Math.max(dayMs, rawExpiresAt - rawPublishedAt);
+          normalizedExpiresAt = Math.max(rawExpiresAt, normalizedPublishedAt + durationMs, now + dayMs);
+        } else {
+          normalizedExpiresAt = rawExpiresAt;
+        }
+      }
 
       const idx = db.notices.findIndex(n => Number(n.id) === id);
       const normalized = {
         id,
         title: String(incoming.title || ''),
         description: String(incoming.description || ''),
-        department: String(incoming.department || 'ALL'),
+        department: String(incoming.department || incoming.departmentCode || 'ALL'),
         category: String(incoming.category || 'General'),
         priority: String(incoming.priority || 'MEDIUM'),
         authorLoginId: String(incoming.authorLoginId || 'principal'),
         authorName: String(incoming.authorName || 'Admin Principal'),
-        publishedAt: Number(incoming.publishedAt || nowMs()),
-        expiresAt: Number(incoming.expiresAt || 0),
+        publishedAt: idx !== -1 && !isClockSkewed ? rawPublishedAt : normalizedPublishedAt,
+        expiresAt: normalizedExpiresAt,
         isPinned: Boolean(incoming.isPinned),
         visibility: String(incoming.visibility || 'PUBLIC'),
         attachments: (incoming.attachments || []).map(a => {
@@ -1138,7 +1162,8 @@
         db.notices.unshift(normalized);
         return true;
       } else {
-        const existingAtts = db.notices[idx].attachments || [];
+        const existing = db.notices[idx];
+        const existingAtts = existing.attachments || [];
         if (existingAtts.length) {
           normalized.attachments = (normalized.attachments || []).map(att => {
             const match = existingAtts.find(e => e.id === att.id || e.filename === att.filename);
@@ -1156,6 +1181,10 @@
             }
             return att;
           });
+        }
+        // Preserve already-normalized local publishedAt if updating the same notice
+        if (isClockSkewed && existing.publishedAt) {
+          normalized.publishedAt = existing.publishedAt;
         }
         db.notices[idx] = normalized;
         return true;
@@ -1346,52 +1375,48 @@
     if (!att) return;
     const safeName = String(att.filename || 'attachment.bin').replace(/[^a-zA-Z0-9._-]/g, '_');
 
-    // Run direct binary PUT to CLOUD_FILES_URL and single-POST FILE_FULL to CLOUD_BLOBS_URL in parallel
-    const putPromise = (async () => {
-      try {
-        const blobToUpload = rawFile || buildDownloadBlob(att);
-        const putResp = await fetch(CLOUD_FILES_URL, {
-          method: 'PUT',
-          headers: { Filename: safeName },
-          body: blobToUpload
+    // 1. Direct binary PUT to CLOUD_FILES_URL first
+    try {
+      const blobToUpload = rawFile || buildDownloadBlob(att);
+      const putResp = await fetch(CLOUD_FILES_URL, {
+        method: 'PUT',
+        headers: { Filename: safeName },
+        body: blobToUpload
+      });
+      if (putResp.ok) {
+        const meta = await putResp.json();
+        if (meta && meta.attachment && meta.attachment.url) {
+          att.remoteUrl = meta.attachment.url;
+          return;
+        }
+      }
+    } catch (_) {}
+
+    // 2. Fallback to CLOUD_BLOBS_URL only if PUT did not return a remoteUrl
+    try {
+      const syncUrl = att.dataUrl || '';
+      if (syncUrl && syncUrl.startsWith('data:') && syncUrl.length <= 240000) {
+        const resp = await fetch(CLOUD_BLOBS_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({
+            action: 'FILE_FULL',
+            attId: att.id,
+            filename: att.filename,
+            size: att.size,
+            dataUrl: syncUrl
+          })
         });
-        if (putResp.ok) {
-          const meta = await putResp.json();
-          if (meta && meta.attachment && meta.attachment.url) {
-            att.remoteUrl = meta.attachment.url;
-          }
+        if (resp.ok && !att.remoteUrl) {
+          try {
+            const meta = await resp.json();
+            if (meta && meta.attachment && meta.attachment.url && !syncUrl.startsWith('data:')) {
+              att.remoteUrl = meta.attachment.url;
+            }
+          } catch (_) {}
         }
-      } catch (_) {}
-    })();
-
-    const postBlobPromise = (async () => {
-      try {
-        const syncUrl = att.dataUrl || '';
-        if (syncUrl && syncUrl.startsWith('data:') && syncUrl.length <= 280000) {
-          const resp = await fetch(CLOUD_BLOBS_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-            body: JSON.stringify({
-              action: 'FILE_FULL',
-              attId: att.id,
-              filename: att.filename,
-              size: att.size,
-              dataUrl: syncUrl
-            })
-          });
-          if (resp.ok && !att.remoteUrl) {
-            try {
-              const meta = await resp.json();
-              if (meta && meta.attachment && meta.attachment.url && !syncUrl.startsWith('data:')) {
-                att.remoteUrl = meta.attachment.url;
-              }
-            } catch (_) {}
-          }
-        }
-      } catch (_) {}
-    })();
-
-    await Promise.allSettled([putPromise, postBlobPromise]);
+      }
+    } catch (_) {}
   }
 
   async function publishCloudEvent(eventObj) {
@@ -1399,68 +1424,267 @@
       const compactEvent = JSON.parse(JSON.stringify(eventObj));
       if (compactEvent.notice && compactEvent.notice.attachments) {
         compactEvent.notice.attachments = compactEvent.notice.attachments.map(a => {
-          const inlineCandidate = a.inlineDataUrl || (a.dataUrl && String(a.dataUrl).length <= 2800 ? a.dataUrl : '');
+          const inlineCandidate =
+            a.inlineDataUrl || (a.dataUrl && String(a.dataUrl).length <= 1600 ? a.dataUrl : '');
           return {
             id: a.id,
             filename: a.filename,
             fileType: a.fileType,
             size: a.size,
             remoteUrl: a.remoteUrl || '',
-            previewText: String(a.previewText || '').slice(0, 240),
-            dataUrl: inlineCandidate && String(inlineCandidate).length <= 2800 ? inlineCandidate : undefined
+            previewText: String(a.previewText || '').slice(0, 220),
+            dataUrl: inlineCandidate && String(inlineCandidate).length <= 1600 ? inlineCandidate : undefined
           };
         });
       }
-      await fetch(CLOUD_SYNC_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify(compactEvent)
-      });
+
+      // Ensure payload is strictly under 3500 bytes so ntfy.sh ALWAYS stores it inline in env.message
+      let bodyStr = JSON.stringify(compactEvent);
+      if (bodyStr.length > 3500 && compactEvent.notice) {
+        if (compactEvent.notice.attachments) {
+          compactEvent.notice.attachments.forEach(a => {
+            delete a.dataUrl;
+          });
+        }
+        if (compactEvent.notice.description && compactEvent.notice.description.length > 1800) {
+          compactEvent.notice.description = compactEvent.notice.description.slice(0, 1800);
+        }
+        bodyStr = JSON.stringify(compactEvent);
+      }
+
+      if (broadcastChannel) {
+        try {
+          broadcastChannel.postMessage(compactEvent);
+        } catch (_) {}
+      }
+
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const resp = await fetch(CLOUD_SYNC_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+            cache: 'no-store',
+            body: bodyStr
+          });
+          if (resp.ok) {
+            if (compactEvent.notice && compactEvent.notice.id) {
+              syncedCloudNoticeIds.add(Number(compactEvent.notice.id));
+            }
+            return true;
+          }
+        } catch (_) {}
+        if (attempt === 0) {
+          await new Promise(r => setTimeout(r, 450));
+        }
+      }
     } catch (_) {}
+    return false;
   }
 
-  async function syncFromCloud() {
+  function mergeLocalStorageNotices() {
     try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return false;
+      const diskDb = JSON.parse(raw);
+      if (!diskDb || !Array.isArray(diskDb.notices)) return false;
+      let changed = false;
+      const diskDeleted = Array.isArray(diskDb.deletedIds) ? diskDb.deletedIds.map(Number) : [];
+      diskDeleted.forEach(delId => {
+        if (!db.deletedIds.includes(delId)) {
+          db.deletedIds.push(delId);
+          changed = true;
+        }
+      });
+      if (db.deletedIds.length) {
+        const before = db.notices.length;
+        db.notices = db.notices.filter(n => !db.deletedIds.includes(Number(n.id)));
+        if (db.notices.length !== before) changed = true;
+      }
+      diskDb.notices.forEach(dn => {
+        const id = Number(dn.id);
+        if (!id || db.deletedIds.includes(id)) return;
+        const exists = db.notices.some(n => Number(n.id) === id);
+        if (!exists) {
+          db.notices.unshift(dn);
+          changed = true;
+        }
+      });
+      return changed;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  async function processSyncResponseLines(lines, allowAttachmentFetch, recordInV5Set) {
+    let changed = false;
+    let maxEnvTimeMs = 0;
+    for (const line of lines) {
+      try {
+        const env = JSON.parse(line);
+        if (env.time && env.time * 1000 > maxEnvTimeMs) {
+          maxEnvTimeMs = env.time * 1000;
+        }
+      } catch (_) {}
+    }
+
+    for (const line of lines) {
+      try {
+        const env = JSON.parse(line);
+        if (env.event !== 'message') continue;
+        const envTimeMs = env.time ? env.time * 1000 : 0;
+        let payload = null;
+
+        if (env.message && String(env.message).trim().startsWith('{')) {
+          payload = JSON.parse(env.message);
+        } else if (env.attachment && env.attachment.url) {
+          if (processedSyncAttachmentPayloads[env.id]) {
+            payload = processedSyncAttachmentPayloads[env.id];
+          } else if (allowAttachmentFetch) {
+            try {
+              const attResp = await fetch(env.attachment.url);
+              if (attResp.ok) {
+                payload = await attResp.json();
+                if (payload && env.id) {
+                  processedSyncAttachmentPayloads[env.id] = payload;
+                }
+              }
+            } catch (_) {}
+          }
+        }
+
+        if (payload) {
+          if (recordInV5Set && payload.action === 'UPSERT' && payload.notice && payload.notice.id) {
+            syncedCloudNoticeIds.add(Number(payload.notice.id));
+          }
+          if (applyCloudPayload(payload, envTimeMs, maxEnvTimeMs)) {
+            changed = true;
+          }
+        }
+      } catch (_) {}
+    }
+    return changed;
+  }
+
+  async function syncFromCloud(isManual = false) {
+    const btnHeroRefresh = document.getElementById('btn-manual-refresh');
+    const btnSecRefresh = document.getElementById('btn-section-refresh');
+    try {
+      if (isManual) {
+        if (btnHeroRefresh) {
+          btnHeroRefresh.disabled = true;
+          btnHeroRefresh.textContent = '↻ Refreshing…';
+        }
+        if (btnSecRefresh) {
+          btnSecRefresh.disabled = true;
+          btnSecRefresh.textContent = '↻ Refreshing…';
+        }
+        // Reset restrictive filters on manual refresh so newly synced notices across all departments/categories show up immediately
+        selectedDept = 'ALL';
+        selectedCategory = 'ALL';
+        selectedPriority = 'ALL';
+        searchQuery = '';
+        showExpired = false;
+        if (filterDeptSelect) filterDeptSelect.value = 'ALL';
+        if (filterCategorySelect) filterCategorySelect.value = 'ALL';
+        if (filterPrioritySelect) filterPrioritySelect.value = 'ALL';
+        if (filterQInput) filterQInput.value = '';
+        if (filterExpiredCheckbox) filterExpiredCheckbox.checked = false;
+        renderDepartmentOptions();
+      }
+
       if (syncStatusTextEl) syncStatusTextEl.textContent = 'Syncing notices…';
-      await syncCloudBlobs();
+
+      let changed = mergeLocalStorageNotices();
+
+      // 1. Fetch primary v5 notice feed FIRST so new notices appear immediately
       const resp = await fetch(`${CLOUD_SYNC_URL}/json?poll=1&since=24h&_t=${Date.now()}`, {
         cache: 'no-store'
       });
-      if (!resp.ok) throw new Error('Sync status ' + resp.status);
-      const text = await resp.text();
-      const lines = text.trim().split('\n').filter(Boolean);
-      let changed = false;
-      for (const line of lines) {
+      if (resp.ok) {
+        const text = await resp.text();
+        const lines = text.trim().split('\n').filter(Boolean);
+        if (await processSyncResponseLines(lines, true, true)) {
+          changed = true;
+        }
+      }
+
+      // 2. One-time fallback import of inline messages from legacy v4 topic
+      if (!legacyV4Imported) {
+        legacyV4Imported = true;
         try {
-          const env = JSON.parse(line);
-          if (env.event === 'message') {
-            if (env.attachment && env.attachment.url) {
-              try {
-                const attResp = await fetch(env.attachment.url);
-                if (attResp.ok) {
-                  const attPayload = await attResp.json();
-                  if (applyCloudPayload(attPayload)) changed = true;
-                }
-              } catch (_) {}
-            } else if (env.message) {
-              const payload = JSON.parse(env.message);
-              if (applyCloudPayload(payload)) changed = true;
+          const v4Resp = await fetch(`${LEGACY_SYNC_URL}/json?poll=1&since=24h&_t=${Date.now()}`, {
+            cache: 'no-store'
+          });
+          if (v4Resp.ok) {
+            const v4Text = await v4Resp.text();
+            const v4Lines = v4Text.trim().split('\n').filter(Boolean);
+            if (await processSyncResponseLines(v4Lines, false, false)) {
+              changed = true;
             }
           }
         } catch (_) {}
       }
+
       if (changed) {
         saveDb(db);
       }
       renderNotices();
-      if (syncStatusTextEl) syncStatusTextEl.textContent = 'Cloud sync active';
+
+      // 3. Push any local user-created notices (id > 1000) that are not yet in the v5 cloud topic
+      const unsyncedLocal = (db.notices || []).filter(
+        n =>
+          Number(n.id) > 1000 &&
+          !(db.deletedIds || []).includes(Number(n.id)) &&
+          !syncedCloudNoticeIds.has(Number(n.id))
+      );
+      for (const localNotice of unsyncedLocal.slice(0, 5)) {
+        await publishCloudEvent({ action: 'UPSERT', notice: localNotice });
+      }
+
+      // 4. Lazily hydrate attachment blobs in background only if a user notice is missing remoteUrl & full quality
+      const needsBlobHydration = (db.notices || []).some(
+        n =>
+          Number(n.id) > 200 &&
+          (n.attachments || []).some(a => !a.remoteUrl && !a.isFullQuality && !cloudBlobComplete[a.id])
+      );
+      if (needsBlobHydration) {
+        if (await syncCloudBlobs()) {
+          saveDb(db);
+          renderNotices();
+        }
+      }
+
+      if (syncStatusTextEl) {
+        syncStatusTextEl.textContent = isManual ? '✓ Synced just now' : 'Cloud sync active';
+      }
     } catch (_) {
       renderNotices();
       if (syncStatusTextEl) syncStatusTextEl.textContent = 'Local + Cloud ready';
+    } finally {
+      if (isManual) {
+        if (btnHeroRefresh) {
+          btnHeroRefresh.disabled = false;
+          btnHeroRefresh.textContent = '↻ Refresh Notices';
+        }
+        if (btnSecRefresh) {
+          btnSecRefresh.disabled = false;
+          btnSecRefresh.textContent = '↻ Refresh';
+        }
+      }
     }
   }
 
   function startRealtimeStream() {
+    if (broadcastChannel) {
+      broadcastChannel.onmessage = ev => {
+        try {
+          if (ev.data && applyCloudPayload(ev.data)) {
+            saveDb(db);
+            renderNotices();
+          }
+        } catch (_) {}
+      };
+    }
     if (typeof EventSource === 'undefined') return;
     try {
       const es = new EventSource(`${CLOUD_SYNC_URL}/sse`);
@@ -1469,15 +1693,18 @@
           const env = JSON.parse(ev.data);
           if (env.event === 'message') {
             let payload = null;
-            if (env.attachment && env.attachment.url) {
+            if (env.message && String(env.message).trim().startsWith('{')) {
+              payload = JSON.parse(env.message);
+            } else if (env.attachment && env.attachment.url) {
               const r = await fetch(env.attachment.url);
               if (r.ok) payload = await r.json();
-            } else if (env.message) {
-              payload = JSON.parse(env.message);
             }
             if (payload) {
-              await syncCloudBlobs();
-              if (applyCloudPayload(payload)) {
+              const envTimeMs = env.time ? env.time * 1000 : Date.now();
+              if (payload.action === 'UPSERT' && payload.notice && payload.notice.id) {
+                syncedCloudNoticeIds.add(Number(payload.notice.id));
+              }
+              if (applyCloudPayload(payload, envTimeMs, envTimeMs)) {
                 saveDb(db);
                 renderNotices();
               }
@@ -1889,12 +2116,12 @@
   }
   document.getElementById('btn-clear-filters').addEventListener('click', resetFilters);
   document.getElementById('btn-manual-refresh').addEventListener('click', () => {
-    syncFromCloud();
+    syncFromCloud(true);
   });
   const btnSectionRefresh = document.getElementById('btn-section-refresh');
   if (btnSectionRefresh) {
     btnSectionRefresh.addEventListener('click', () => {
-      syncFromCloud();
+      syncFromCloud(true);
     });
   }
 
@@ -2003,7 +2230,7 @@
         let inlineDataUrl = '';
 
         if (fileType === 'IMAGE' && dataUrl.startsWith('data:image/')) {
-          inlineDataUrl = await createResizedImageDataUrl(dataUrl, 160, 0.46);
+          inlineDataUrl = await createResizedImageDataUrl(dataUrl, 96, 0.38);
         }
 
         let snippet = `Attached Circular: ${file.name} (${formatFileSize(file.size)}) — Uploaded by ${currentUser.fullName}`;
@@ -2037,7 +2264,11 @@
         rawFileMap[attId] = file;
       }
 
-      const expiryVal = noticeExpiryInput.value ? new Date(noticeExpiryInput.value).getTime() : 0;
+      let expiryVal = 0;
+      if (noticeExpiryInput.value) {
+        const parsedEnd = new Date(noticeExpiryInput.value + 'T23:59:59.999').getTime();
+        expiryVal = !Number.isNaN(parsedEnd) ? Math.max(parsedEnd, nowMs() + dayMs) : 0;
+      }
       const editId = Number(editNoticeIdInput.value);
       let savedNotice = null;
 
@@ -2079,6 +2310,19 @@
         db.notices.unshift(savedNotice);
       }
 
+      // Reset any active filters when publishing so the author immediately sees their newly published notice
+      selectedDept = 'ALL';
+      selectedCategory = 'ALL';
+      selectedPriority = 'ALL';
+      searchQuery = '';
+      showExpired = false;
+      if (filterDeptSelect) filterDeptSelect.value = 'ALL';
+      if (filterCategorySelect) filterCategorySelect.value = 'ALL';
+      if (filterPrioritySelect) filterPrioritySelect.value = 'ALL';
+      if (filterQInput) filterQInput.value = '';
+      if (filterExpiredCheckbox) filterExpiredCheckbox.checked = false;
+      renderDepartmentOptions();
+
       saveDb(db);
       noticeForm.reset();
       editNoticeIdInput.value = '';
@@ -2090,9 +2334,10 @@
       document.getElementById('notices').scrollIntoView({ behavior: 'smooth' });
 
       if (savedNotice) {
-        // 1. Broadcast notice immediately with inline preview so other phones see it within 1 second
+        if (syncStatusTextEl) syncStatusTextEl.textContent = 'Broadcasting notice to cloud…';
+        // 1. Broadcast notice immediately with inline preview (<3.5KB) so other devices see it within <1s on Refresh
         await publishCloudEvent({ action: 'UPSERT', notice: savedNotice });
-        // 2. Upload full high-res binary & blob in parallel and update remoteUrl
+        // 2. Upload full high-res binary in background and broadcast updated remoteUrl
         if (uploadedAttachments.length > 0) {
           for (const att of uploadedAttachments) {
             await uploadAttachmentToCloud(att, rawFileMap[att.id]);
@@ -2100,6 +2345,7 @@
           saveDb(db);
           await publishCloudEvent({ action: 'UPSERT', notice: savedNotice });
         }
+        if (syncStatusTextEl) syncStatusTextEl.textContent = '✓ Notice synced across devices';
       }
     } finally {
       btnSubmitNotice.disabled = false;

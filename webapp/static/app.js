@@ -2,9 +2,9 @@
   const list = document.getElementById('notice-list');
   if (!list) return;
   const params = new URLSearchParams(location.search);
-  const department = params.get('department') || 'ALL';
-  const category = params.get('category') || 'ALL';
-  const q = params.get('q') || '';
+  let department = params.get('department') || 'ALL';
+  let category = params.get('category') || 'ALL';
+  let q = params.get('q') || '';
   const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const icons = {Examination:'▣',Placements:'↗',Events:'✦',General:'▤',Academic:'▤',Circular:'▤',Sports:'✦',Other:'▤'};
   function formatSize(bytes) {
@@ -23,17 +23,34 @@
     const attachments = (n.attachments || []).map(a => `<span class="attachment" style="display:inline-flex;align-items:center;gap:8px;"><a href="${escapeHtml(a.url)}" download="${escapeHtml(a.filename)}" style="color:var(--accent);font-weight:700;text-decoration:none;">⬇ Download ${escapeHtml(a.filename)}</a> <small>(${formatSize(a.size)})</small> <a href="${escapeHtml(a.url)}?inline=1" target="_blank" rel="noopener" style="border:1px solid #cbd5e1;border-radius:6px;padding:2px 7px;font-size:11px;font-weight:600;text-decoration:none;color:#1e293b;">Preview</a></span>`).join('');
     return `<article class="notice-card" data-notice-id="${n.id}"><div class="notice-symbol ${cls}">${icons[n.category] || '▤'}</div><div class="notice-main"><div class="notice-meta"><span class="category-pill">${escapeHtml(n.category)}</span>${n.priority === 'HIGH' ? '<span class="priority-pill">IMPORTANT</span>' : ''}${n.is_pinned ? '<span class="pinned-pill">⌖ PINNED</span>' : ''}<span class="notice-date">${escapeHtml(date)}</span></div><h3>${escapeHtml(n.title)}</h3><p>${escapeHtml(n.description)}</p>${attachments ? `<div class="attachments">${attachments}</div>` : ''}<div class="notice-foot"><span class="department-tag">${escapeHtml(n.department || 'COLLEGE-WIDE')}</span><span>Posted by ${escapeHtml(n.author || 'Admin Principal')}</span></div></div>${actions}</article>`;
   }
-  async function refresh() {
+  async function refresh(isManual = false) {
+    const manualBtn = document.getElementById('manual-refresh-btn');
+    if (isManual) {
+      department = 'ALL';
+      category = 'ALL';
+      q = '';
+      const qInput = document.querySelector('input[name="q"]');
+      const deptSelect = document.querySelector('select[name="department"]');
+      const catSelect = document.querySelector('select[name="category"]');
+      if (qInput) qInput.value = '';
+      if (deptSelect) deptSelect.value = 'ALL';
+      if (catSelect) catSelect.value = 'ALL';
+      if (location.search) history.replaceState(null, '', location.pathname);
+      if (manualBtn) {
+        manualBtn.disabled = true;
+        manualBtn.textContent = '↻ Refreshing…';
+      }
+    }
     try {
       const url = new URL('/api/notices', location.origin);
-      url.searchParams.set('department', department); url.searchParams.set('category', category); url.searchParams.set('q', q);
-      const response = await fetch(url, {headers:{'Accept':'application/json'}, cache:'no-store'});
+      url.searchParams.set('department', department); url.searchParams.set('category', category); url.searchParams.set('q', q); url.searchParams.set('_t', String(Date.now()));
+      const response = await fetch(url, {headers:{'Accept':'application/json','Cache-Control':'no-cache'}, cache:'no-store'});
       if (!response.ok) return;
       const data = await response.json();
       const notices = data.notices || [];
       const before = [...list.querySelectorAll('[data-notice-id]')].map(el => el.dataset.noticeId).join(',');
       const after = notices.map(n => String(n.id)).join(',');
-      if (before !== after || list.children.length === 0) {
+      if (isManual || before !== after || list.children.length === 0) {
         if (notices.length) list.innerHTML = notices.map(renderNotice).join('');
         else list.innerHTML = '<div class="empty-state"><div class="empty-icon">⌕</div><h3>No notices found</h3><p>Try another search or department filter. New notices will appear here automatically.</p><a href="/" class="button button-secondary">Clear filters</a></div>';
         const count = document.getElementById('heading-count'); if (count) count.textContent = notices.length;
@@ -45,6 +62,16 @@
         notices.forEach(n => { const node = old.get(String(n.id)); if (node) { const temp = document.createElement('div'); temp.innerHTML = renderNotice(n); const fresh = temp.firstElementChild; if (node.outerHTML !== fresh.outerHTML) node.replaceWith(fresh); } });
       }
     } catch (_) { /* Keep the last successfully rendered notices when offline. */ }
+    finally {
+      if (isManual && manualBtn) {
+        manualBtn.disabled = false;
+        manualBtn.textContent = '↻ Refresh';
+      }
+    }
+  }
+  const manualRefreshBtn = document.getElementById('manual-refresh-btn');
+  if (manualRefreshBtn) {
+    manualRefreshBtn.addEventListener('click', () => refresh(true));
   }
   list.addEventListener('click', async event => {
     const deleteButton = event.target.closest('.dynamic-delete-button');
