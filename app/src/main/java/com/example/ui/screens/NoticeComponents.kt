@@ -1555,34 +1555,23 @@ fun CaptchaChallengeBox(
 @Composable
 fun LoginDialog(
     viewModel: NoticeBoardViewModel,
-    allUsers: List<UserEntity>,
+    allUsers: List<UserEntity> = emptyList(),
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
-    var isForgotMode by remember { mutableStateOf(false) }
 
-    // Sign-In state
+    // Sign-In + CAPTCHA state
     var loginId by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var passwordVisible by remember { mutableStateOf(false) }
-    var resetSuccessBanner by remember { mutableStateOf<String?>(null) }
-
-    // Forgot Password + CAPTCHA state
-    var forgotLoginId by remember { mutableStateOf("") }
     var captchaCode by remember { mutableStateOf(generateCaptchaCode()) }
     var captchaInput by remember { mutableStateOf("") }
-    var newPassword by remember { mutableStateOf("") }
-    var confirmPassword by remember { mutableStateOf("") }
-    var newPasswordVisible by remember { mutableStateOf(false) }
-    var forgotError by remember { mutableStateOf<String?>(null) }
+    var localError by remember { mutableStateOf<String?>(null) }
 
     val authError by viewModel.authError.collectAsState()
-    val matchedForgotUser = remember(forgotLoginId, allUsers) {
-        val clean = forgotLoginId.trim()
-        if (clean.isEmpty()) null else allUsers.find { it.loginId.equals(clean, ignoreCase = true) }
-    }
     val isCaptchaVerified = captchaInput.trim().isNotEmpty() &&
             captchaInput.trim().equals(captchaCode, ignoreCase = true)
+    val displayError = localError ?: authError
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1595,7 +1584,7 @@ fun LoginDialog(
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = if (isForgotMode) "Forgot Password (CAPTCHA)" else "Portal Sign In",
+                    text = "Portal Sign In",
                     fontWeight = FontWeight.Bold,
                     fontSize = 18.sp
                 )
@@ -1608,367 +1597,145 @@ fun LoginDialog(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                // 2-Tab Mode Switcher: Sign In | Forgot Password (CAPTCHA)
-                Surface(
-                    color = MaterialTheme.colorScheme.surfaceVariant,
-                    shape = RoundedCornerShape(8.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(4.dp),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                Text(
+                    text = "Enter your college Login ID, password, and security CAPTCHA code to sign in.",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                // Error alert
+                if (displayError != null) {
+                    Surface(
+                        color = PriorityHighRedBg,
+                        shape = RoundedCornerShape(6.dp),
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        Button(
-                            onClick = {
-                                forgotError = null
-                                isForgotMode = false
-                            },
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(36.dp)
-                                .testTag("tab_signin_mode"),
-                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 0.dp),
-                            shape = RoundedCornerShape(6.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (!isForgotMode) MaterialTheme.colorScheme.primary else Color.Transparent,
-                                contentColor = if (!isForgotMode) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        ) {
-                            Text("Sign In", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        }
-                        Button(
-                            onClick = {
-                                viewModel.clearAuthError()
-                                if (forgotLoginId.isBlank() && loginId.isNotBlank()) {
-                                    forgotLoginId = loginId.trim()
-                                }
-                                captchaCode = generateCaptchaCode()
-                                captchaInput = ""
-                                forgotError = null
-                                isForgotMode = true
-                            },
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(36.dp)
-                                .testTag("tab_forgot_mode"),
-                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 0.dp),
-                            shape = RoundedCornerShape(6.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (isForgotMode) MaterialTheme.colorScheme.primary else Color.Transparent,
-                                contentColor = if (isForgotMode) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        ) {
-                            Text("Forgot Password", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        }
+                        Text(
+                            text = displayError,
+                            color = PriorityHighRed,
+                            fontSize = 12.sp,
+                            modifier = Modifier.padding(8.dp)
+                        )
                     }
                 }
 
-                if (!isForgotMode) {
+                // Login ID Input
+                OutlinedTextField(
+                    value = loginId,
+                    onValueChange = {
+                        loginId = it
+                        localError = null
+                        viewModel.clearAuthError()
+                    },
+                    label = { Text("Login ID / Roll No") },
+                    leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("login_id_input"),
+                    singleLine = true
+                )
+
+                // Password Input
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = {
+                        password = it
+                        localError = null
+                        viewModel.clearAuthError()
+                    },
+                    label = { Text("Password") },
+                    leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
+                    trailingIcon = {
+                        IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                            Icon(
+                                imageVector = if (passwordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                contentDescription = "Toggle password"
+                            )
+                        }
+                    },
+                    visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("login_password_input"),
+                    singleLine = true
+                )
+
+                // Security CAPTCHA Verification after Password
+                Text(
+                    text = "Security CAPTCHA Verification",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+
+                CaptchaChallengeBox(
+                    captchaCode = captchaCode,
+                    onRefresh = {
+                        captchaCode = generateCaptchaCode()
+                        captchaInput = ""
+                        localError = null
+                    }
+                )
+
+                OutlinedTextField(
+                    value = captchaInput,
+                    onValueChange = {
+                        captchaInput = it.uppercase()
+                        localError = null
+                    },
+                    label = { Text("Enter 6-Character CAPTCHA Shown Above") },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("login_captcha_input"),
+                    singleLine = true
+                )
+
+                if (captchaInput.trim().isNotEmpty()) {
                     Text(
-                        text = "Enter your college Login ID and password to access restricted department circulars or manage notices.",
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-
-                    if (resetSuccessBanner != null) {
-                        Surface(
-                            color = PriorityLowGreenBg,
-                            shape = RoundedCornerShape(6.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text(
-                                text = resetSuccessBanner ?: "",
-                                color = PriorityLowGreen,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                modifier = Modifier.padding(8.dp)
-                            )
-                        }
-                    }
-
-                    // Error alert
-                    if (authError != null) {
-                        Surface(
-                            color = PriorityHighRedBg,
-                            shape = RoundedCornerShape(6.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text(
-                                text = authError ?: "",
-                                color = PriorityHighRed,
-                                fontSize = 12.sp,
-                                modifier = Modifier.padding(8.dp)
-                            )
-                        }
-                    }
-
-                    // Login ID Input
-                    OutlinedTextField(
-                        value = loginId,
-                        onValueChange = { loginId = it },
-                        label = { Text("Login ID / Roll No") },
-                        leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("login_id_input"),
-                        singleLine = true
-                    )
-
-                    // Password Input
-                    OutlinedTextField(
-                        value = password,
-                        onValueChange = { password = it },
-                        label = { Text("Password") },
-                        leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
-                        trailingIcon = {
-                            IconButton(onClick = { passwordVisible = !passwordVisible }) {
-                                Icon(
-                                    imageVector = if (passwordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                    contentDescription = "Toggle password"
-                                )
-                            }
-                        },
-                        visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("login_password_input"),
-                        singleLine = true
-                    )
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.End
-                    ) {
-                        TextButton(
-                            onClick = {
-                                viewModel.clearAuthError()
-                                forgotLoginId = loginId.trim()
-                                captchaCode = generateCaptchaCode()
-                                captchaInput = ""
-                                newPassword = ""
-                                confirmPassword = ""
-                                forgotError = null
-                                isForgotMode = true
-                            },
-                            modifier = Modifier.testTag("forgot_password_button")
-                        ) {
-                            Text(
-                                text = "Forgot Password? Reset with CAPTCHA",
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                    }
-                } else {
-                    Text(
-                        text = "Step 1: Enter your Login ID. Step 2: Solve the security CAPTCHA. Step 3: Set your new password.",
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-
-                    if (forgotError != null) {
-                        Surface(
-                            color = PriorityHighRedBg,
-                            shape = RoundedCornerShape(6.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text(
-                                text = forgotError ?: "",
-                                color = PriorityHighRed,
-                                fontSize = 12.sp,
-                                modifier = Modifier.padding(8.dp)
-                            )
-                        }
-                    }
-
-                    OutlinedTextField(
-                        value = forgotLoginId,
-                        onValueChange = { forgotLoginId = it },
-                        label = { Text("1. Login ID (e.g. principal, hod_cse, cse_fac1)") },
-                        leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("forgot_login_id_input"),
-                        singleLine = true
-                    )
-
-                    if (forgotLoginId.trim().isNotEmpty()) {
-                        if (matchedForgotUser != null) {
-                            Text(
-                                text = "✓ Account verified: ${matchedForgotUser.fullName} (${matchedForgotUser.role} • ${matchedForgotUser.departmentCode})",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = PriorityLowGreen
-                            )
-                        } else {
-                            Text(
-                                text = "✗ No account found matching '${forgotLoginId.trim()}'",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = PriorityHighRed
-                            )
-                        }
-                    }
-
-                    Text(
-                        text = "2. Security CAPTCHA Verification",
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-
-                    CaptchaChallengeBox(
-                        captchaCode = captchaCode,
-                        onRefresh = {
-                            captchaCode = generateCaptchaCode()
-                            captchaInput = ""
-                        }
-                    )
-
-                    OutlinedTextField(
-                        value = captchaInput,
-                        onValueChange = { captchaInput = it.uppercase() },
-                        label = { Text("Enter 6-Character CAPTCHA Shown Above") },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("forgot_captcha_input"),
-                        singleLine = true
-                    )
-
-                    if (captchaInput.trim().isNotEmpty()) {
-                        Text(
-                            text = if (isCaptchaVerified) "✓ CAPTCHA security code verified!" else "Keep typing the 6-character code shown above...",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = if (isCaptchaVerified) PriorityLowGreen else MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-
-                    OutlinedTextField(
-                        value = newPassword,
-                        onValueChange = { newPassword = it },
-                        label = { Text("3. New Password (min. 4 chars)") },
-                        leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
-                        trailingIcon = {
-                            IconButton(onClick = { newPasswordVisible = !newPasswordVisible }) {
-                                Icon(
-                                    imageVector = if (newPasswordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                    contentDescription = "Toggle new password"
-                                )
-                            }
-                        },
-                        visualTransformation = if (newPasswordVisible) VisualTransformation.None else PasswordVisualTransformation(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("forgot_new_password_input"),
-                        singleLine = true
-                    )
-
-                    OutlinedTextField(
-                        value = confirmPassword,
-                        onValueChange = { confirmPassword = it },
-                        label = { Text("4. Confirm New Password") },
-                        leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
-                        trailingIcon = {
-                            IconButton(onClick = { newPasswordVisible = !newPasswordVisible }) {
-                                Icon(
-                                    imageVector = if (newPasswordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                    contentDescription = "Toggle confirm password"
-                                )
-                            }
-                        },
-                        visualTransformation = if (newPasswordVisible) VisualTransformation.None else PasswordVisualTransformation(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("forgot_confirm_password_input"),
-                        singleLine = true
+                        text = if (isCaptchaVerified) "✓ CAPTCHA security code verified!" else "Keep typing the 6-character code shown above...",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (isCaptchaVerified) PriorityLowGreen else MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
         },
         confirmButton = {
-            if (!isForgotMode) {
-                Button(
-                    onClick = {
-                        if (loginId.isBlank() || password.isBlank()) {
-                            Toast.makeText(context, "Please enter login ID and password", Toast.LENGTH_SHORT).show()
-                            return@Button
-                        }
-                        viewModel.login(loginId, password) { success ->
-                            if (success) {
-                                Toast.makeText(context, "Welcome to GCE Notice Board!", Toast.LENGTH_SHORT).show()
-                                onDismiss()
-                            }
-                        }
-                    },
-                    modifier = Modifier.testTag("login_submit_button"),
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-                ) {
-                    Text("Sign In")
-                }
-            } else {
-                Button(
-                    onClick = {
-                        forgotError = null
-                        if (forgotLoginId.isBlank()) {
-                            forgotError = "Please enter your Login ID."
-                            return@Button
-                        }
-                        if (captchaInput.trim().uppercase() != captchaCode.uppercase()) {
-                            forgotError = "Incorrect CAPTCHA code. Please try the new code generated."
+            Button(
+                onClick = {
+                    localError = null
+                    viewModel.clearAuthError()
+                    if (loginId.isBlank() || password.isBlank()) {
+                        localError = "Please enter your Login ID and password."
+                        Toast.makeText(context, "Please enter login ID and password", Toast.LENGTH_SHORT).show()
+                        return@Button
+                    }
+                    if (captchaInput.trim().uppercase() != captchaCode.uppercase()) {
+                        localError = "Incorrect CAPTCHA security code. Please enter the new code generated."
+                        captchaCode = generateCaptchaCode()
+                        captchaInput = ""
+                        return@Button
+                    }
+                    viewModel.login(loginId, password) { success ->
+                        if (success) {
+                            Toast.makeText(context, "Welcome to GCE Notice Board!", Toast.LENGTH_SHORT).show()
+                            onDismiss()
+                        } else {
                             captchaCode = generateCaptchaCode()
                             captchaInput = ""
-                            return@Button
                         }
-                        if (newPassword.length < 4) {
-                            forgotError = "New password must be at least 4 characters."
-                            return@Button
-                        }
-                        if (newPassword != confirmPassword) {
-                            forgotError = "New password and confirm password do not match."
-                            return@Button
-                        }
-                        viewModel.resetPassword(forgotLoginId, newPassword) { success, msg ->
-                            if (success) {
-                                loginId = forgotLoginId.trim()
-                                password = ""
-                                resetSuccessBanner = msg
-                                isForgotMode = false
-                            } else {
-                                forgotError = msg
-                                captchaCode = generateCaptchaCode()
-                                captchaInput = ""
-                            }
-                        }
-                    },
-                    modifier = Modifier.testTag("forgot_submit_button"),
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-                ) {
-                    Text("Verify & Reset Password")
-                }
+                    }
+                },
+                modifier = Modifier.testTag("login_submit_button"),
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+            ) {
+                Text("Sign In")
             }
         },
         dismissButton = {
-            if (!isForgotMode) {
-                OutlinedButton(onClick = onDismiss) {
-                    Text("Cancel")
-                }
-            } else {
-                OutlinedButton(
-                    onClick = {
-                        forgotError = null
-                        isForgotMode = false
-                    },
-                    modifier = Modifier.testTag("back_to_signin_button")
-                ) {
-                    Text("Back to Sign In")
-                }
+            OutlinedButton(onClick = onDismiss) {
+                Text("Cancel")
             }
         }
     )

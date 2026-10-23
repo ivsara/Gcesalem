@@ -30,16 +30,6 @@
         <div class="login-icon">↗</div>
         <div class="eyebrow dark-eyebrow">CAMPUS AUTHENTICATION PORTAL</div>
 
-        <!-- Mode Switcher Tabs -->
-        <div style="display:flex;gap:8px;margin:10px 0 16px;background:#f1f5f9;padding:4px;border-radius:10px;">
-          <button type="button" id="tab-signin" style="flex:1;padding:9px 12px;border-radius:8px;border:none;font-weight:700;font-size:13px;cursor:pointer;background:#155eef;color:#fff;">
-            🔐 Sign In
-          </button>
-          <button type="button" id="tab-forgot" style="flex:1;padding:9px 12px;border-radius:8px;border:none;font-weight:700;font-size:13px;cursor:pointer;background:transparent;color:#334155;">
-            🔑 Forgot Password (CAPTCHA)
-          </button>
-        </div>
-
         {% if error %}
           <div class="error-alert" role="alert">{{ error }}</div>
         {% endif %}
@@ -47,12 +37,14 @@
           <div style="background:#ecfdf3;border:1px solid #abefc6;color:#067647;padding:10px 12px;border-radius:8px;font-size:13px;margin-bottom:12px;" role="status">{{ success }}</div>
         {% endif %}
 
-        <!-- Sign In Form -->
-        <div id="signin-section" {% if mode == 'forgot' %}style="display:none;"{% endif %}>
+        <!-- Sign In Form with CAPTCHA after Password -->
+        <div id="signin-section">
           <h2>Sign in to your account</h2>
-          <p class="login-subtitle">Enter your college Login ID and password.</p>
+          <p class="login-subtitle">Enter your college Login ID, password, and security CAPTCHA code.</p>
           <form method="post" action="/login" class="login-form">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="captcha_expected" id="captcha-expected-input" value="{{ captcha_code or '' }}">
+
             <label class="form-field">
               <span>Login ID</span>
               <input name="login_id" value="{{ prefill_login_id or '' }}" autocomplete="username" required placeholder="e.g. principal, hod_cse, faculty_cse1, student_cse1">
@@ -61,33 +53,14 @@
               <span>Password</span>
               <input type="password" id="signin-password" name="password" autocomplete="current-password" required placeholder="Enter your password">
             </label>
-            <div style="display:flex;justify-content:space-between;align-items:center;margin:4px 0 10px;">
+            <div style="display:flex;justify-content:flex-start;align-items:center;margin:4px 0 8px;">
               <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:#475467;cursor:pointer;">
                 <input type="checkbox" id="toggle-signin-pass"> Show password
               </label>
-              <button type="button" id="link-open-forgot" style="background:none;border:none;color:#155eef;font-size:12px;font-weight:700;cursor:pointer;text-decoration:underline;padding:0;">
-                Forgot Password? Reset with CAPTCHA →
-              </button>
             </div>
-            <button class="button button-primary login-submit" type="submit">Sign in <span>→</span></button>
-          </form>
-        </div>
 
-        <!-- Forgot Password with CAPTCHA Form -->
-        <div id="forgot-section" {% if mode != 'forgot' %}style="display:none;"{% endif %}>
-          <h2>Forgot Password</h2>
-          <p class="login-subtitle">Verify your Login ID and complete the security CAPTCHA challenge to set a new password.</p>
-          <form method="post" action="/forgot-password" class="login-form" id="webapp-forgot-form">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <input type="hidden" name="captcha_expected" id="captcha-expected-input" value="{{ captcha_code or '' }}">
-
-            <label class="form-field">
-              <span>1. Account Login ID <b>*</b></span>
-              <input name="login_id" id="forgot-login-input" value="{{ prefill_login_id or '' }}" autocomplete="username" required placeholder="e.g. principal, hod_cse, faculty_cse1, student_cse1">
-            </label>
-
-            <div class="form-field" style="margin-top:8px;">
-              <span>2. Security CAPTCHA Verification <b>*</b></span>
+            <div class="form-field" style="margin-top:4px;margin-bottom:12px;">
+              <span>Security CAPTCHA Verification <b>*</b></span>
               <div style="display:flex;align-items:center;gap:10px;margin:6px 0;">
                 <canvas id="webapp-captcha-canvas" width="200" height="54" style="border-radius:8px;border:1px solid #cbd5e1;background:#eef4ff;"></canvas>
                 <button type="button" class="button button-secondary" id="btn-webapp-refresh-captcha" style="padding:8px 12px;font-size:12px;">↻ New CAPTCHA</button>
@@ -95,24 +68,7 @@
               <input name="captcha_input" id="webapp-captcha-input" autocomplete="off" required placeholder="Enter the 6-character CAPTCHA code above">
             </div>
 
-            <label class="form-field" style="margin-top:8px;">
-              <span>3. New Password <b>*</b></span>
-              <input type="password" id="forgot-new-pass" name="new_password" required minlength="4" placeholder="Enter new password">
-            </label>
-
-            <label class="form-field" style="margin-top:8px;">
-              <span>Confirm New Password <b>*</b></span>
-              <input type="password" id="forgot-confirm-pass" name="confirm_password" required minlength="4" placeholder="Confirm new password">
-            </label>
-
-            <div style="display:flex;justify-content:space-between;align-items:center;margin:6px 0 12px;">
-              <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:#475467;cursor:pointer;">
-                <input type="checkbox" id="toggle-forgot-pass"> Show new password
-              </label>
-            </div>
-
-            <button class="button button-primary login-submit" type="submit">✓ Verify CAPTCHA &amp; Reset Password</button>
-            <button class="button button-quiet" type="button" id="btn-back-signin" style="width:100%;margin-top:8px;">← Back to Sign In</button>
+            <button class="button button-primary login-submit" type="submit">Sign in <span>→</span></button>
           </form>
         </div>
 
@@ -123,12 +79,6 @@
 
   <script>
     (function() {
-      const tabSignin = document.getElementById('tab-signin');
-      const tabForgot = document.getElementById('tab-forgot');
-      const signinSec = document.getElementById('signin-section');
-      const forgotSec = document.getElementById('forgot-section');
-      const linkOpenForgot = document.getElementById('link-open-forgot');
-      const btnBackSignin = document.getElementById('btn-back-signin');
       const canvas = document.getElementById('webapp-captcha-canvas');
       const expectedInput = document.getElementById('captcha-expected-input');
       const refreshBtn = document.getElementById('btn-webapp-refresh-captcha');
@@ -168,24 +118,9 @@
         drawCaptcha(code);
       }
 
-      function setMode(mode) {
-        const isForgot = mode === 'forgot';
-        signinSec.style.display = isForgot ? 'none' : 'block';
-        forgotSec.style.display = isForgot ? 'block' : 'none';
-        tabSignin.style.background = isForgot ? 'transparent' : '#155eef';
-        tabSignin.style.color = isForgot ? '#334155' : '#fff';
-        tabForgot.style.background = isForgot ? '#155eef' : 'transparent';
-        tabForgot.style.color = isForgot ? '#fff' : '#334155';
-        if (isForgot) generateNewCode();
-      }
-
-      if (expectedInput.value) drawCaptcha(expectedInput.value);
+      if (expectedInput && expectedInput.value) drawCaptcha(expectedInput.value);
       else generateNewCode();
 
-      if (tabSignin) tabSignin.addEventListener('click', () => setMode('signin'));
-      if (tabForgot) tabForgot.addEventListener('click', () => setMode('forgot'));
-      if (linkOpenForgot) linkOpenForgot.addEventListener('click', () => setMode('forgot'));
-      if (btnBackSignin) btnBackSignin.addEventListener('click', () => setMode('signin'));
       if (refreshBtn) refreshBtn.addEventListener('click', generateNewCode);
 
       const toggleSignin = document.getElementById('toggle-signin-pass');
@@ -194,17 +129,6 @@
           document.getElementById('signin-password').type = e.target.checked ? 'text' : 'password';
         });
       }
-      const toggleForgot = document.getElementById('toggle-forgot-pass');
-      if (toggleForgot) {
-        toggleForgot.addEventListener('change', e => {
-          const t = e.target.checked ? 'text' : 'password';
-          document.getElementById('forgot-new-pass').type = t;
-          document.getElementById('forgot-confirm-pass').type = t;
-        });
-      }
-      {% if mode == 'forgot' %}
-      setMode('forgot');
-      {% endif %}
     })();
   </script>
 </body>

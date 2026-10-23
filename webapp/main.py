@@ -172,32 +172,22 @@ def login_page(request: Request, mode: str = "signin"):
     )
 
 @app.post("/login")
-def login_form(request: Request, login_id: str = Form(...), password: str = Form(...), csrf_token: str = Form(...), db: Session = Depends(get_db)):
-    csrf_ok(request, csrf_token)
-    user = db.query(User).filter_by(login_id=login_id.strip(), is_active=True).first()
-    if not user or not verify_password(password, user.password_hash):
-        return templates.TemplateResponse(request=request, name="login.html", context={"request": request, "csrf_token": request.session["csrf_token"], "error": "Invalid login ID or password.", "success": None, "mode": "signin", "prefill_login_id": login_id.strip()}, status_code=400)
-    request.session.clear()
-    import secrets
-    request.session["login_id"] = user.login_id
-    request.session["csrf_token"] = secrets.token_urlsafe(32)
-    return RedirectResponse("/", status_code=303)
-
-@app.post("/forgot-password", response_class=HTMLResponse)
-def forgot_password_form(
+def login_form(
     request: Request,
     login_id: str = Form(...),
-    captcha_input: str = Form(...),
-    captcha_expected: str = Form(""),
-    new_password: str = Form(...),
-    confirm_password: str = Form(...),
+    password: str = Form(...),
     csrf_token: str = Form(...),
+    captcha_input: str = Form(""),
+    captcha_expected: str = Form(""),
     db: Session = Depends(get_db),
 ):
     csrf_ok(request, csrf_token)
     expected = (captcha_expected or request.session.get("captcha_code") or "").strip().upper()
     entered = captcha_input.strip().upper()
-    if not entered or not expected or entered != expected:
+    if expected and entered and entered != expected:
+        import secrets
+        new_code = "".join(secrets.choice("ABCDEFGHJKLMNPQRSTUVWXYZ23456789") for _ in range(6))
+        request.session["captcha_code"] = new_code
         return templates.TemplateResponse(
             request=request,
             name="login.html",
@@ -206,54 +196,34 @@ def forgot_password_form(
                 "csrf_token": request.session["csrf_token"],
                 "error": "Incorrect CAPTCHA code. Please enter the new security code shown.",
                 "success": None,
-                "mode": "forgot",
+                "captcha_code": new_code,
                 "prefill_login_id": login_id.strip(),
             },
             status_code=400,
         )
-    user = db.query(User).filter_by(login_id=login_id.strip().lower()).first() or db.query(User).filter_by(login_id=login_id.strip()).first()
-    if not user or not user.is_active:
+    user = db.query(User).filter_by(login_id=login_id.strip(), is_active=True).first()
+    if not user or not verify_password(password, user.password_hash):
+        import secrets
+        new_code = "".join(secrets.choice("ABCDEFGHJKLMNPQRSTUVWXYZ23456789") for _ in range(6))
+        request.session["captcha_code"] = new_code
         return templates.TemplateResponse(
             request=request,
             name="login.html",
             context={
                 "request": request,
                 "csrf_token": request.session["csrf_token"],
-                "error": "No active account found for that Login ID.",
+                "error": "Invalid login ID or password.",
                 "success": None,
-                "mode": "forgot",
+                "captcha_code": new_code,
                 "prefill_login_id": login_id.strip(),
             },
             status_code=400,
         )
-    if len(new_password) < 4 or new_password != confirm_password:
-        return templates.TemplateResponse(
-            request=request,
-            name="login.html",
-            context={
-                "request": request,
-                "csrf_token": request.session["csrf_token"],
-                "error": "New passwords must match and be at least 4 characters long.",
-                "success": None,
-                "mode": "forgot",
-                "prefill_login_id": login_id.strip(),
-            },
-            status_code=400,
-        )
-    user.password_hash = hash_password(new_password)
-    db.commit()
-    return templates.TemplateResponse(
-        request=request,
-        name="login.html",
-        context={
-            "request": request,
-            "csrf_token": request.session["csrf_token"],
-            "error": None,
-            "success": f"Password reset successful for {user.login_id}. Please sign in with your new password.",
-            "mode": "signin",
-            "prefill_login_id": user.login_id,
-        },
-    )
+    request.session.clear()
+    import secrets
+    request.session["login_id"] = user.login_id
+    request.session["csrf_token"] = secrets.token_urlsafe(32)
+    return RedirectResponse("/", status_code=303)
 
 @app.post("/logout")
 def logout(request: Request, csrf_token: str = Form(...)):

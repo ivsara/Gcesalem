@@ -1205,13 +1205,10 @@
     }
   }
 
-  const btnHeaderForgot = document.getElementById('btn-header-forgot');
-
   function renderAuthUI() {
     if (!currentUser) {
       userChipContainerEl.classList.add('hidden');
       btnOpenLogin.classList.remove('hidden');
-      if (btnHeaderForgot) btnHeaderForgot.classList.remove('hidden');
       btnLogout.classList.add('hidden');
       navPublishEl.classList.add('hidden');
       navAdminEl.classList.add('hidden');
@@ -1227,7 +1224,6 @@
       userFullnameEl.textContent = currentUser.fullName;
       userRoleDeptEl.textContent = `${currentUser.role} · ${currentUser.department}`;
       btnOpenLogin.classList.add('hidden');
-      if (btnHeaderForgot) btnHeaderForgot.classList.add('hidden');
       btnLogout.classList.remove('hidden');
       statRoleEl.textContent = currentUser.fullName;
 
@@ -1792,36 +1788,16 @@
     previewModal.classList.remove('open');
   });
 
-  // Login Modal & Full Forgot Password Setup with CAPTCHA
+  // Login Modal with CAPTCHA after Password
   const loginModal = document.getElementById('login-modal');
   const loginModalTitleEl = document.getElementById('login-modal-title');
-  const tabLoginModeBtn = document.getElementById('tab-login-mode');
-  const tabForgotModeBtn = document.getElementById('tab-forgot-mode');
   const loginViewEl = document.getElementById('login-view');
-  const forgotViewEl = document.getElementById('forgot-view');
   const loginErrorEl = document.getElementById('login-error');
   const loginSuccessEl = document.getElementById('login-success');
-  const forgotErrorEl = document.getElementById('forgot-error');
-  const forgotAccountStatusEl = document.getElementById('forgot-account-status');
   const captchaMatchStatusEl = document.getElementById('captcha-match-status');
   const captchaCanvas = document.getElementById('captcha-canvas');
+  const loginCaptchaInputEl = document.getElementById('login-captcha-input');
   let currentCaptchaCode = '';
-
-  function updateModalTabStyles(isForgot) {
-    if (tabLoginModeBtn && tabForgotModeBtn) {
-      if (isForgot) {
-        tabForgotModeBtn.style.background = '#155eef';
-        tabForgotModeBtn.style.color = '#fff';
-        tabLoginModeBtn.style.background = 'transparent';
-        tabLoginModeBtn.style.color = '#334155';
-      } else {
-        tabLoginModeBtn.style.background = '#155eef';
-        tabLoginModeBtn.style.color = '#fff';
-        tabForgotModeBtn.style.background = 'transparent';
-        tabForgotModeBtn.style.color = '#334155';
-      }
-    }
-  }
 
   function generateCaptcha() {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -1885,29 +1861,9 @@
     }
   }
 
-  function updateForgotAccountLookup() {
-    if (!forgotAccountStatusEl) return;
-    const raw = document.getElementById('forgot-login-id').value.trim().toLowerCase();
-    if (!raw) {
-      forgotAccountStatusEl.textContent = 'Enter your registered GCE Salem Login ID.';
-      forgotAccountStatusEl.style.color = '#475467';
-      return;
-    }
-    const found = db.users.find(u => u.loginId.toLowerCase() === raw);
-    if (found) {
-      forgotAccountStatusEl.textContent = `✓ Account Verified: ${found.fullName} (Role: ${found.role} · Dept: ${found.department})`;
-      forgotAccountStatusEl.style.color = '#067647';
-    } else {
-      forgotAccountStatusEl.textContent = '✗ No registered account matches this Login ID.';
-      forgotAccountStatusEl.style.color = '#b42318';
-    }
-  }
-
   function showLoginView(successMessage = '') {
-    updateModalTabStyles(false);
     if (loginModalTitleEl) loginModalTitleEl.textContent = 'Sign in to GCE Salem Portal';
     if (loginViewEl) loginViewEl.classList.remove('hidden');
-    if (forgotViewEl) forgotViewEl.classList.add('hidden');
     loginErrorEl.classList.add('hidden');
     if (loginSuccessEl) {
       if (successMessage) {
@@ -1917,20 +1873,7 @@
         loginSuccessEl.classList.add('hidden');
       }
     }
-  }
-
-  function showForgotView() {
-    updateModalTabStyles(true);
-    if (loginModalTitleEl) loginModalTitleEl.textContent = 'Forgot Password — CAPTCHA Reset';
-    if (loginViewEl) loginViewEl.classList.add('hidden');
-    if (forgotViewEl) forgotViewEl.classList.remove('hidden');
-    if (forgotErrorEl) forgotErrorEl.classList.add('hidden');
-    const prefillId = document.getElementById('login-id-input').value.trim();
-    document.getElementById('forgot-login-id').value = prefillId;
-    document.getElementById('forgot-captcha-input').value = '';
-    document.getElementById('forgot-new-pass').value = '';
-    document.getElementById('forgot-confirm-pass').value = '';
-    updateForgotAccountLookup();
+    if (loginCaptchaInputEl) loginCaptchaInputEl.value = '';
     generateCaptcha();
   }
 
@@ -1940,50 +1883,38 @@
     document.getElementById('login-pass-input').value = '';
     loginModal.classList.add('open');
   });
-  if (btnHeaderForgot) {
-    btnHeaderForgot.addEventListener('click', () => {
-      document.getElementById('login-id-input').value = '';
-      showForgotView();
-      loginModal.classList.add('open');
-    });
-  }
   document.getElementById('btn-close-login').addEventListener('click', () => {
     loginModal.classList.remove('open');
   });
-  document.getElementById('btn-open-forgot').addEventListener('click', showForgotView);
-  document.getElementById('btn-back-to-login').addEventListener('click', () => showLoginView(''));
-  if (tabLoginModeBtn) tabLoginModeBtn.addEventListener('click', () => showLoginView(''));
-  if (tabForgotModeBtn) tabForgotModeBtn.addEventListener('click', showForgotView);
-  document.getElementById('btn-refresh-captcha').addEventListener('click', generateCaptcha);
+  const btnRefreshCaptcha = document.getElementById('btn-refresh-captcha');
+  if (btnRefreshCaptcha) {
+    btnRefreshCaptcha.addEventListener('click', () => {
+      if (loginCaptchaInputEl) loginCaptchaInputEl.value = '';
+      generateCaptcha();
+    });
+  }
 
-  document.getElementById('forgot-login-id').addEventListener('input', updateForgotAccountLookup);
-  document.getElementById('forgot-captcha-input').addEventListener('input', e => {
-    if (!captchaMatchStatusEl) return;
-    const val = e.target.value.trim().toUpperCase();
-    if (!val) {
-      captchaMatchStatusEl.textContent = 'Enter the 6-character security code shown above.';
-      captchaMatchStatusEl.style.color = '#475467';
-    } else if (val === currentCaptchaCode.toUpperCase()) {
-      captchaMatchStatusEl.textContent = '✓ CAPTCHA code verified!';
-      captchaMatchStatusEl.style.color = '#067647';
-    } else {
-      captchaMatchStatusEl.textContent = 'Keep typing the 6-character CAPTCHA code…';
-      captchaMatchStatusEl.style.color = '#475467';
-    }
-  });
+  if (loginCaptchaInputEl) {
+    loginCaptchaInputEl.addEventListener('input', e => {
+      if (!captchaMatchStatusEl) return;
+      const val = e.target.value.trim().toUpperCase();
+      if (!val) {
+        captchaMatchStatusEl.textContent = 'Enter the 6-character security code shown above.';
+        captchaMatchStatusEl.style.color = '#475467';
+      } else if (val === currentCaptchaCode.toUpperCase()) {
+        captchaMatchStatusEl.textContent = '✓ CAPTCHA code verified!';
+        captchaMatchStatusEl.style.color = '#067647';
+      } else {
+        captchaMatchStatusEl.textContent = 'Keep typing the 6-character CAPTCHA code…';
+        captchaMatchStatusEl.style.color = '#475467';
+      }
+    });
+  }
 
   const loginShowPass = document.getElementById('login-show-pass');
   if (loginShowPass) {
     loginShowPass.addEventListener('change', e => {
       document.getElementById('login-pass-input').type = e.target.checked ? 'text' : 'password';
-    });
-  }
-  const forgotShowPass = document.getElementById('forgot-show-pass');
-  if (forgotShowPass) {
-    forgotShowPass.addEventListener('change', e => {
-      const t = e.target.checked ? 'text' : 'password';
-      document.getElementById('forgot-new-pass').type = t;
-      document.getElementById('forgot-confirm-pass').type = t;
     });
   }
 
@@ -1997,72 +1928,38 @@
     e.preventDefault();
     const id = document.getElementById('login-id-input').value.trim().toLowerCase();
     const pass = document.getElementById('login-pass-input').value;
-    const user = db.users.find(u => u.loginId.toLowerCase() === id && u.password === pass);
-    if (!user) {
-      loginErrorEl.textContent = 'Invalid Login ID or password. Use "Forgot Password (CAPTCHA)" above if you need to reset your password.';
+    const captchaEntered = loginCaptchaInputEl ? loginCaptchaInputEl.value.trim().toUpperCase() : '';
+
+    if (!captchaEntered || captchaEntered !== currentCaptchaCode.toUpperCase()) {
+      loginErrorEl.textContent = 'Incorrect CAPTCHA security code. Please enter the new code generated.';
       loginErrorEl.classList.remove('hidden');
       if (loginSuccessEl) loginSuccessEl.classList.add('hidden');
+      if (loginCaptchaInputEl) loginCaptchaInputEl.value = '';
+      generateCaptcha();
+      return;
+    }
+
+    const user = db.users.find(u => u.loginId.toLowerCase() === id && u.password === pass);
+    if (!user) {
+      loginErrorEl.textContent = 'Invalid Login ID or password. Please try again.';
+      loginErrorEl.classList.remove('hidden');
+      if (loginSuccessEl) loginSuccessEl.classList.add('hidden');
+      if (loginCaptchaInputEl) loginCaptchaInputEl.value = '';
+      generateCaptcha();
       return;
     }
     if (!user.isActive) {
       loginErrorEl.textContent = 'This account has been deactivated by the Admin Principal.';
       loginErrorEl.classList.remove('hidden');
       if (loginSuccessEl) loginSuccessEl.classList.add('hidden');
+      if (loginCaptchaInputEl) loginCaptchaInputEl.value = '';
+      generateCaptcha();
       return;
     }
     currentUser = user;
     localStorage.setItem(SESSION_KEY, user.loginId);
     loginModal.classList.remove('open');
     renderAuthUI();
-  });
-
-  document.getElementById('forgot-form').addEventListener('submit', async e => {
-    e.preventDefault();
-    const id = document.getElementById('forgot-login-id').value.trim().toLowerCase();
-    const captchaEntered = document.getElementById('forgot-captcha-input').value.trim().toUpperCase();
-    const newPass = document.getElementById('forgot-new-pass').value;
-    const confirmPass = document.getElementById('forgot-confirm-pass').value;
-
-    if (!captchaEntered || captchaEntered !== currentCaptchaCode.toUpperCase()) {
-      forgotErrorEl.textContent = 'Incorrect CAPTCHA security code. Please enter the new code generated.';
-      forgotErrorEl.classList.remove('hidden');
-      document.getElementById('forgot-captcha-input').value = '';
-      generateCaptcha();
-      return;
-    }
-
-    const user = db.users.find(u => u.loginId.toLowerCase() === id);
-    if (!user) {
-      forgotErrorEl.textContent = 'No account found with that Login ID.';
-      forgotErrorEl.classList.remove('hidden');
-      generateCaptcha();
-      return;
-    }
-
-    if (!user.isActive) {
-      forgotErrorEl.textContent = 'This account is deactivated. Contact Admin Principal.';
-      forgotErrorEl.classList.remove('hidden');
-      return;
-    }
-
-    if (newPass.length < 4) {
-      forgotErrorEl.textContent = 'New password must be at least 4 characters long.';
-      forgotErrorEl.classList.remove('hidden');
-      return;
-    }
-
-    if (newPass !== confirmPass) {
-      forgotErrorEl.textContent = 'New password and confirm password do not match.';
-      forgotErrorEl.classList.remove('hidden');
-      return;
-    }
-
-    user.password = newPass;
-    saveDb(db);
-    document.getElementById('login-id-input').value = user.loginId;
-    document.getElementById('login-pass-input').value = '';
-    showLoginView(`✓ Password reset successful for ${user.loginId} (${user.fullName}). Sign in below with your new password.`);
-    await publishCloudEvent({ action: 'PASSWORD_RESET', loginId: user.loginId, newPassword: newPass });
   });
 
   // Admin Console Handlers
