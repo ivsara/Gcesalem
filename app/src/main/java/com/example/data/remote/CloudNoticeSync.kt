@@ -92,29 +92,22 @@ object CloudNoticeSync {
                 }
             } catch (_: Exception) {}
 
-            // 2. Chunked base64 upload to BLOBS_URL for files <= 120 KB so all devices can preview/download
-            if (bytes.size <= 120 * 1024) {
+            // 2. Single-POST FILE_FULL upload to BLOBS_URL for files <= 180 KB so all devices can preview/download rapidly
+            if (bytes.size <= 180 * 1024) {
                 val b64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
                 val dataUrl = "data:$mime;base64,$b64"
-                val chunkSize = 2600
-                val total = ceil(dataUrl.length.toDouble() / chunkSize).toInt()
-                for (idx in 0 until total) {
-                    val start = idx * chunkSize
-                    val end = minOf((idx + 1) * chunkSize, dataUrl.length)
-                    val chunk = dataUrl.substring(start, end)
-                    val chunkJson = JSONObject().apply {
-                        put("action", "FILE_CHUNK")
-                        put("attId", attId)
-                        put("idx", idx)
-                        put("total", total)
-                        put("chunk", chunk)
-                    }
-                    val postReq = Request.Builder()
-                        .url(BLOBS_URL)
-                        .post(chunkJson.toString().toRequestBody("text/plain; charset=utf-8".toMediaType()))
-                        .build()
-                    client.newCall(postReq).execute().close()
+                val fullJson = JSONObject().apply {
+                    put("action", "FILE_FULL")
+                    put("attId", attId)
+                    put("filename", att.originalFilename)
+                    put("fileType", att.fileType)
+                    put("dataUrl", dataUrl)
                 }
+                val postReq = Request.Builder()
+                    .url(BLOBS_URL)
+                    .post(fullJson.toString().toRequestBody("text/plain; charset=utf-8".toMediaType()))
+                    .build()
+                client.newCall(postReq).execute().close()
             }
         } catch (_: Exception) {}
         return remoteUrl
@@ -173,10 +166,28 @@ object CloudNoticeSync {
                 try {
                     val env = JSONObject(line)
                     if (env.optString("event") != "message") continue
-                    val msg = env.optString("message", "")
+                    var msg = env.optString("message", "")
+                    val attObj = env.optJSONObject("attachment")
+                    if (attObj != null && attObj.optString("url").isNotBlank()) {
+                        try {
+                            val attReq = Request.Builder().url(attObj.optString("url")).get().build()
+                            client.newCall(attReq).execute().use { r ->
+                                if (r.isSuccessful) {
+                                    msg = r.body?.string() ?: msg
+                                }
+                            }
+                        } catch (_: Exception) {}
+                    }
                     if (msg.isBlank()) continue
                     val payload = JSONObject(msg)
-                    if (payload.optString("action") == "FILE_CHUNK") {
+                    val action = payload.optString("action")
+                    if (action == "FILE_FULL") {
+                        val attId = payload.optLong("attId", 0L)
+                        val dataUrl = payload.optString("dataUrl", "")
+                        if (attId > 0L && dataUrl.startsWith("data:")) {
+                            cloudBlobComplete[attId] = dataUrl
+                        }
+                    } else if (action == "FILE_CHUNK") {
                         val attId = payload.optLong("attId", 0L)
                         if (attId <= 0L) continue
                         val idx = payload.optInt("idx", 0)
@@ -402,7 +413,7 @@ object CloudNoticeSync {
                                 val filename = aObj.optString("filename", "Circular.pdf")
                                 val safeStoredName = "${attId}_${filename.replace(Regex("[^a-zA-Z0-9._-]"), "_")}"
                                 val fileType = aObj.optString("fileType", "PDF")
-                                val size = aObj.optLong("size", 102400L)
+                                var size = aObj.optLong("size", 0L)
                                 val preview = aObj.optString("previewText", "Official GCE Salem Circular")
                                 val remoteUrl = aObj.optString("remoteUrl", "")
                                 val inlineDataUrl = aObj.optString("dataUrl", "")
@@ -410,15 +421,21 @@ object CloudNoticeSync {
 
                                 val dir = attachmentsDir
                                 val targetFile = if (dir != null) File(dir, safeStoredName) else null
-                                if (targetFile != null && !targetFile.exists()) {
-                                    val blobDataUrl = cloudBlobComplete[attId] ?: inlineDataUrl
+                                if (targetFile != null && (!targetFile.exists() || targetFile.length() < 4000L)) {
                                     var saved = false
-                                    if (blobDataUrl.isNotBlank()) {
-                                        saved = saveDataUrlToLocalFile(blobDataUrl, safeStoredName)
+                                    val fullBlob = cloudBlobComplete[attId] ?: ""
+                                    if (fullBlob.isNotBlank()) {
+                                        saved = saveDataUrlToLocalFile(fullBlob, safeStoredName)
                                     }
                                     if (!saved && remoteUrl.isNotBlank()) {
-                                        downloadRemoteUrlToLocalFile(remoteUrl, safeStoredName)
+                                        saved = downloadRemoteUrlToLocalFile(remoteUrl, safeStoredName)
                                     }
+                                    if (!saved && inlineDataUrl.isNotBlank() && !targetFile.exists()) {
+                                        saveDataUrlToLocalFile(inlineDataUrl, safeStoredName)
+                                    }
+                                }
+                                if (targetFile != null && targetFile.exists() && targetFile.length() >= 4000L) {
+                                    size = targetFile.length()
                                 }
 
                                 repository.insertAttachment(

@@ -7,15 +7,21 @@
   const q = params.get('q') || '';
   const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const icons = {Examination:'▣',Placements:'↗',Events:'✦',General:'▤',Academic:'▤',Circular:'▤',Sports:'✦',Other:'▤'};
+  function formatSize(bytes) {
+    const b = Math.max(0, Math.round(Number(bytes || 0)));
+    if (b < 1024) return `${b} B`;
+    if (b < 1048576) return `${(b / 1024).toFixed(1).replace(/\.0$/, '')} KB`;
+    return `${(b / 1048576).toFixed(2).replace(/\.00$/, '')} MB`;
+  }
   function renderNotice(n) {
     const role = document.body.dataset.role || '';
     const loginId = document.body.dataset.loginId || '';
-    const canManage = role === 'Administrator' || (role === 'Faculty' && n.author_login_id === loginId);
+    const canManage = role === 'Administrator' || role === 'HOD' || (role === 'Faculty' && n.author_login_id === loginId);
     const actions = canManage ? `<div class="notice-actions"><button class="icon-button edit-button" type="button" data-id="${n.id}" data-title="${escapeHtml(n.title)}" data-description="${escapeHtml(n.description)}" title="Edit notice" aria-label="Edit notice">✎</button><button class="icon-button dynamic-delete-button" type="button" data-id="${n.id}" title="Delete notice" aria-label="Delete notice">×</button></div>` : '';
     const cls = n.priority === 'HIGH' ? 'symbol-high' : n.category === 'Placements' ? 'symbol-career' : n.category === 'Examination' ? 'symbol-exam' : 'symbol-general';
     const date = n.published_at ? new Date(n.published_at + (n.published_at.endsWith('Z') ? '' : 'Z')).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}) : '';
-    const attachments = (n.attachments || []).map(a => `<a class="attachment" href="${escapeHtml(a.url)}"><span>↧</span>${escapeHtml(a.filename)} <small>${(Number(a.size || 0)/1048576).toFixed(1)} MB</small></a>`).join('');
-    return `<article class="notice-card" data-notice-id="${n.id}"><div class="notice-symbol ${cls}">${icons[n.category] || '▤'}</div><div class="notice-main"><div class="notice-meta"><span class="category-pill">${escapeHtml(n.category)}</span>${n.priority === 'HIGH' ? '<span class="priority-pill">IMPORTANT</span>' : ''}${n.is_pinned ? '<span class="pinned-pill">⌖ PINNED</span>' : ''}<span class="notice-date">${escapeHtml(date)}</span></div><h3>${escapeHtml(n.title)}</h3><p>${escapeHtml(n.description)}</p>${attachments ? `<div class="attachments">${attachments}</div>` : ''}<div class="notice-foot"><span class="department-tag">${escapeHtml(n.department || 'COLLEGE-WIDE')}</span><span>Posted by ${escapeHtml(n.author || 'College administration')}</span></div></div>${actions}</article>`;
+    const attachments = (n.attachments || []).map(a => `<span class="attachment" style="display:inline-flex;align-items:center;gap:8px;"><a href="${escapeHtml(a.url)}" download="${escapeHtml(a.filename)}" style="color:var(--accent);font-weight:700;text-decoration:none;">⬇ Download ${escapeHtml(a.filename)}</a> <small>(${formatSize(a.size)})</small> <a href="${escapeHtml(a.url)}?inline=1" target="_blank" rel="noopener" style="border:1px solid #cbd5e1;border-radius:6px;padding:2px 7px;font-size:11px;font-weight:600;text-decoration:none;color:#1e293b;">Preview</a></span>`).join('');
+    return `<article class="notice-card" data-notice-id="${n.id}"><div class="notice-symbol ${cls}">${icons[n.category] || '▤'}</div><div class="notice-main"><div class="notice-meta"><span class="category-pill">${escapeHtml(n.category)}</span>${n.priority === 'HIGH' ? '<span class="priority-pill">IMPORTANT</span>' : ''}${n.is_pinned ? '<span class="pinned-pill">⌖ PINNED</span>' : ''}<span class="notice-date">${escapeHtml(date)}</span></div><h3>${escapeHtml(n.title)}</h3><p>${escapeHtml(n.description)}</p>${attachments ? `<div class="attachments">${attachments}</div>` : ''}<div class="notice-foot"><span class="department-tag">${escapeHtml(n.department || 'COLLEGE-WIDE')}</span><span>Posted by ${escapeHtml(n.author || 'Admin Principal')}</span></div></div>${actions}</article>`;
   }
   async function refresh() {
     try {

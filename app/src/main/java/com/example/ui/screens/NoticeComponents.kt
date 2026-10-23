@@ -144,6 +144,27 @@ fun formatShortDate(ms: Long): String {
     return sdf.format(Date(ms))
 }
 
+private val FAKE_DEMO_SIZES = setOf(
+    1420500L, 582400L, 420500L, 1890000L, 345000L, 2140000L, 720000L, 1850000L, 340000L, 102400L, 52L
+)
+
+fun formatFileSize(bytes: Long): String {
+    val safeBytes = bytes.coerceAtLeast(0L)
+    return when {
+        safeBytes < 1024L -> "$safeBytes B"
+        safeBytes < 1048576L -> {
+            val kb = safeBytes.toDouble() / 1024.0
+            val formatted = String.format(Locale.US, "%.1f", kb).removeSuffix(".0")
+            "$formatted KB"
+        }
+        else -> {
+            val mb = safeBytes.toDouble() / 1048576.0
+            val formatted = String.format(Locale.US, "%.2f", mb).removeSuffix(".00")
+            "$formatted MB"
+        }
+    }
+}
+
 private fun buildValidPdfBytes(title: String, snippet: String): ByteArray {
     val cleanTitle = title.replace(Regex("[()\\\\]"), "")
     val lines = listOf(
@@ -173,6 +194,41 @@ private fun buildValidPdfBytes(title: String, snippet: String): ByteArray {
     return pdf.toByteArray(Charsets.UTF_8)
 }
 
+fun getDownloadableBytes(context: Context, attachment: AttachmentEntity): ByteArray {
+    val filename = attachment.originalFilename.ifBlank { "GCE_Salem_Circular.pdf" }
+    val ext = filename.substringAfterLast('.', "pdf").lowercase()
+    val localDir = File(context.filesDir, "attachments")
+    val localFile = File(localDir, attachment.storedFilename)
+    return if (localFile.exists() && localFile.isFile && localFile.length() > 0L) {
+        localFile.readBytes()
+    } else if (ext == "pdf") {
+        buildValidPdfBytes(
+            filename,
+            attachment.previewSnippet.ifBlank { "Official GCE Salem Circular Document" }
+        )
+    } else {
+        val content = "GOVERNMENT COLLEGE OF ENGINEERING, SALEM\n" +
+                "Document: $filename\n\n" +
+                attachment.previewSnippet.ifBlank { "Official GCE Salem Attachment" }
+        content.toByteArray(Charsets.UTF_8)
+    }
+}
+
+fun getRealAttachmentSize(context: Context, attachment: AttachmentEntity): Long {
+    val localDir = File(context.filesDir, "attachments")
+    val localFile = File(localDir, attachment.storedFilename)
+    if (localFile.exists() && localFile.isFile && localFile.length() > 0L) {
+        val diskLen = localFile.length()
+        if (diskLen >= 4000L || attachment.fileSizeBytes <= 0L || FAKE_DEMO_SIZES.contains(attachment.fileSizeBytes)) {
+            return diskLen
+        }
+    }
+    if (attachment.fileSizeBytes > 0L && !FAKE_DEMO_SIZES.contains(attachment.fileSizeBytes)) {
+        return attachment.fileSizeBytes
+    }
+    return getDownloadableBytes(context, attachment).size.toLong()
+}
+
 fun saveAttachmentToDownloads(context: Context, attachment: AttachmentEntity) {
     try {
         val filename = attachment.originalFilename.ifBlank { "GCE_Salem_Circular.pdf" }
@@ -186,22 +242,7 @@ fun saveAttachmentToDownloads(context: Context, attachment: AttachmentEntity) {
             else -> "application/octet-stream"
         }
 
-        // Check if a real uploaded file was saved in internal storage
-        val localDir = File(context.filesDir, "attachments")
-        val localFile = File(localDir, attachment.storedFilename)
-        val bytesToWrite: ByteArray = if (localFile.exists() && localFile.isFile) {
-            localFile.readBytes()
-        } else if (ext == "pdf") {
-            buildValidPdfBytes(
-                filename,
-                attachment.previewSnippet.ifBlank { "Official GCE Salem Circular Document" }
-            )
-        } else {
-            val content = "GOVERNMENT COLLEGE OF ENGINEERING, SALEM\n" +
-                    "Document: $filename\n\n" +
-                    attachment.previewSnippet.ifBlank { "Official GCE Salem Attachment" }
-            content.toByteArray(Charsets.UTF_8)
-        }
+        val bytesToWrite: ByteArray = getDownloadableBytes(context, attachment)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val values = ContentValues().apply {
@@ -222,7 +263,7 @@ fun saveAttachmentToDownloads(context: Context, attachment: AttachmentEntity) {
                 resolver.update(uri, values, null, null)
                 Toast.makeText(
                     context,
-                    "Downloaded '$filename' to Downloads folder (${bytesToWrite.size / 1024 + 1} KB)",
+                    "Downloaded '$filename' to Downloads folder (${formatFileSize(bytesToWrite.size.toLong())})",
                     Toast.LENGTH_LONG
                 ).show()
                 return
@@ -503,7 +544,7 @@ fun NoticeCard(
                                     )
                                     Spacer(modifier = Modifier.width(4.dp))
                                     Text(
-                                        text = att.originalFilename.take(20),
+                                        text = "${att.originalFilename.take(20)} (${formatFileSize(getRealAttachmentSize(cardContext, att))})",
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.SemiBold,
                                         color = MaterialTheme.colorScheme.primary
@@ -774,7 +815,7 @@ fun NoticeDetailDialog(
                                             overflow = TextOverflow.Ellipsis
                                         )
                                         Text(
-                                            text = "${att.fileType} • ${(att.fileSizeBytes / 1024)} KB",
+                                            text = "${att.fileType} • ${formatFileSize(getRealAttachmentSize(context, att))}",
                                             fontSize = 11.sp,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
@@ -921,7 +962,7 @@ fun AttachmentPreviewDialog(
                     fontSize = 14.sp
                 )
                 Text(
-                    text = "Format: ${att.fileType} • Size: ${(att.fileSizeBytes / 1024).coerceAtLeast(1)} KB",
+                    text = "Format: ${att.fileType} • Size: ${formatFileSize(getRealAttachmentSize(context, att))}",
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -941,34 +982,30 @@ fun AttachmentPreviewDialog(
                         )
                     }
                     att.fileType == "IMAGE" -> {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(160.dp)
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(GceBluePrimary),
-                            contentAlignment = Alignment.Center
+                        Surface(
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.fillMaxWidth()
                         ) {
                             Column(
                                 horizontalAlignment = Alignment.CenterHorizontally,
-                                modifier = Modifier.padding(16.dp)
+                                modifier = Modifier.padding(20.dp)
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.Image,
                                     contentDescription = null,
-                                    tint = GceGoldAccent,
-                                    modifier = Modifier.size(40.dp)
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(36.dp)
                                 )
                                 Spacer(modifier = Modifier.height(8.dp))
                                 Text(
-                                    text = "GCE SALEM OFFICIAL NOTICE IMAGE",
-                                    color = Color.White,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 12.sp
+                                    text = att.originalFilename,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 13.sp
                                 )
                                 Text(
-                                    text = att.previewSnippet.ifEmpty { "High Resolution Image Attachment Verified" },
-                                    color = Color.White.copy(alpha = 0.8f),
+                                    text = "Syncing image attachment from cloud storage...",
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     fontSize = 11.sp
                                 )
                             }
@@ -1278,14 +1315,14 @@ fun NoticeFormDialog(
                     }
                 }
 
-                // Upload Real File from Device + Quick Attachment Templates
+                // Upload Real File from Device
                 val filePickerLauncher = rememberLauncherForActivityResult(
                     contract = ActivityResultContracts.GetContent()
                 ) { uri: Uri? ->
                     if (uri != null) {
                         try {
                             var displayName = "Uploaded_File_${System.currentTimeMillis()}.pdf"
-                            var fileSize = 102400L
+                            var fileSize = 0L
                             context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
                                 val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
                                 val sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE)
@@ -1307,6 +1344,9 @@ fun NoticeFormDialog(
                                     input.copyTo(output)
                                 }
                             }
+                            if (destFile.exists() && destFile.length() > 0L) {
+                                fileSize = destFile.length()
+                            }
                             val ext = displayName.substringAfterLast('.', "PDF").uppercase()
                             val normalizedType = when (ext) {
                                 "JPG", "JPEG", "PNG", "WEBP" -> "IMAGE"
@@ -1322,10 +1362,10 @@ fun NoticeFormDialog(
                                     fileType = normalizedType,
                                     fileSizeBytes = fileSize,
                                     uploadedBy = currentUser.loginId,
-                                    previewSnippet = "Uploaded document '$displayName' (${fileSize / 1024 + 1} KB) by ${currentUser.fullName}."
+                                    previewSnippet = "Uploaded document '$displayName' (${formatFileSize(fileSize)}) by ${currentUser.fullName}."
                                 )
                             )
-                            Toast.makeText(context, "Attached: $displayName", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "Attached: $displayName (${formatFileSize(fileSize)})", Toast.LENGTH_SHORT).show()
                         } catch (e: Exception) {
                             Toast.makeText(context, "Could not attach file: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
                         }
@@ -1345,77 +1385,6 @@ fun NoticeFormDialog(
                     Text("Upload File / Document from Device", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                 }
 
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    OutlinedButton(
-                        onClick = {
-                            val count = attachments.size + 1
-                            attachments.add(
-                                AttachmentEntity(
-                                    noticeId = 0,
-                                    originalFilename = "Circular_Annexure_$count.pdf",
-                                    storedFilename = "attach_pdf_$count.pdf",
-                                    fileType = "PDF",
-                                    fileSizeBytes = 720000,
-                                    uploadedBy = currentUser.loginId,
-                                    previewSnippet = "Official College PDF Annexure Document $count. Certified by Controller of Examinations & HOD."
-                                )
-                            )
-                        },
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Icon(imageVector = Icons.Default.Description, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("+ PDF", fontSize = 11.sp)
-                    }
-
-                    OutlinedButton(
-                        onClick = {
-                            val count = attachments.size + 1
-                            attachments.add(
-                                AttachmentEntity(
-                                    noticeId = 0,
-                                    originalFilename = "Event_Banner_Photo_$count.png",
-                                    storedFilename = "attach_img_$count.png",
-                                    fileType = "IMAGE",
-                                    fileSizeBytes = 1850000,
-                                    uploadedBy = currentUser.loginId,
-                                    previewSnippet = "Official High-Resolution College Event Banner & Poster $count."
-                                )
-                            )
-                        },
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Icon(imageVector = Icons.Default.Image, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("+ Image", fontSize = 11.sp)
-                    }
-
-                    OutlinedButton(
-                        onClick = {
-                            val count = attachments.size + 1
-                            attachments.add(
-                                AttachmentEntity(
-                                    noticeId = 0,
-                                    originalFilename = "Student_List_Schedule_$count.xlsx",
-                                    storedFilename = "attach_xls_$count.xlsx",
-                                    fileType = "XLS",
-                                    fileSizeBytes = 340000,
-                                    uploadedBy = currentUser.loginId,
-                                    previewSnippet = "Spreadsheet containing registered candidate roll numbers, lab halls, and session timings."
-                                )
-                            )
-                        },
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Icon(imageVector = Icons.Default.TableChart, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("+ Excel", fontSize = 11.sp)
-                    }
-                }
-
                 // List added attachments
                 attachments.forEachIndexed { index, att ->
                     Row(
@@ -1427,7 +1396,7 @@ fun NoticeFormDialog(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
-                            text = "${att.fileType}: ${att.originalFilename}",
+                            text = "${att.fileType}: ${att.originalFilename} (${formatFileSize(att.fileSizeBytes)})",
                             fontSize = 12.sp,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,

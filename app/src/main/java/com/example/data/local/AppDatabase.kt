@@ -231,7 +231,7 @@ abstract class AppDatabase : RoomDatabase() {
                     originalFilename = "GCE_Salem_End_Sem_NovDec_2026_Schedule.pdf",
                     storedFilename = "attach_n1_timetable.pdf",
                     fileType = "PDF",
-                    fileSizeBytes = 1420500,
+                    fileSizeBytes = 0L,
                     uploadedBy = "principal",
                     previewSnippet = "CONTROLLER OF EXAMINATIONS, GCE SALEM\nTheory Exam Starts: 15-Nov-2026\nForenoon Session: 09:30 AM to 12:30 PM\nAfternoon Session: 01:30 PM to 04:30 PM"
                 )
@@ -261,13 +261,13 @@ abstract class AppDatabase : RoomDatabase() {
                     originalFilename = "Eligible_Candidates_Zoho_TCS_Drive_2026.xlsx",
                     storedFilename = "attach_n2_placements.xlsx",
                     fileType = "XLS",
-                    fileSizeBytes = 582400,
+                    fileSizeBytes = 0L,
                     uploadedBy = "principal",
                     previewSnippet = "Sheet1: Shortlisted Students List\nBranches: CIVIL, MECH, ECE, EEE, CSE, METT, AIML\nTotal Eligible: 342 Students"
                 )
             )
 
-            // Notice 3: SIH Hackathon (Image poster)
+            // Notice 3: SIH Hackathon (PDF circular)
             val n3 = NoticeEntity(
                 id = 3,
                 title = "Smart India Hackathon (SIH 2026) - Internal College Evaluation",
@@ -288,12 +288,12 @@ abstract class AppDatabase : RoomDatabase() {
             db.attachmentDao().insertAttachment(
                 AttachmentEntity(
                     noticeId = n3Id,
-                    originalFilename = "SIH_2026_Internal_Poster.png",
-                    storedFilename = "attach_n3_sih.png",
-                    fileType = "IMAGE",
-                    fileSizeBytes = 2140000,
+                    originalFilename = "SIH_2026_Internal_Evaluation_Circular.pdf",
+                    storedFilename = "attach_n3_sih.pdf",
+                    fileType = "PDF",
+                    fileSizeBytes = 0L,
                     uploadedBy = "hod_cse",
-                    previewSnippet = "SIH 2026 Internal Screening Poster\nVenue: CSE Lab 3 & Seminar Hall\nCoordinator: HOD - CSE"
+                    previewSnippet = "SIH 2026 Internal Screening Circular\nVenue: CSE Lab 3 & Seminar Hall\nCoordinator: HOD - CSE"
                 )
             )
 
@@ -321,7 +321,7 @@ abstract class AppDatabase : RoomDatabase() {
                     originalFilename = "CSE_Model_Lab_Schedule_Batches.docx",
                     storedFilename = "attach_n4_labs.docx",
                     fileType = "DOC",
-                    fileSizeBytes = 345000,
+                    fileSizeBytes = 0L,
                     uploadedBy = "faculty_cse1",
                     previewSnippet = "Batch A: Student 1 - CSE to Student 5 - CSE\nBatch B: Student 6 - CSE to Student 10 - CSE\nLab Attire: Formal dress & Lab Coat mandatory."
                 )

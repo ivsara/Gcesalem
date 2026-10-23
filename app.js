@@ -8,8 +8,10 @@
   const CLOUD_BLOBS_TOPIC = 'gce_salem_notice_blobs_v4';
   const CLOUD_BLOBS_URL = `https://ntfy.sh/${CLOUD_BLOBS_TOPIC}`;
 
-  const cloudBlobChunks = {}; // attId -> { total, parts: {} }
+  const cloudBlobChunks = {}; // attId -> { total, parts: {}, count }
   const cloudBlobComplete = {}; // attId -> full dataUrl string
+  const cloudFilesByMeta = []; // [{ name, baseKey, size, url }]
+  const processedBlobMsgIds = new Set();
 
   const escapeHtml = val =>
     String(val ?? '').replace(/[&<>"']/g, c => ({
@@ -23,26 +25,80 @@
   const dayMs = 24 * 60 * 60 * 1000;
   const nowMs = () => Date.now();
 
-  function createSampleDataUrl(filename, content) {
-    return 'data:text/plain;charset=utf-8,' + encodeURIComponent(content);
+  const FAKE_DEMO_SIZES = new Set([1420500, 582400, 420500, 1890000, 345000, 2140000, 720000, 1850000, 340000, 102400, 52]);
+
+  function decodedBase64ByteLength(dataUrl) {
+    if (!dataUrl || !dataUrl.includes(';base64,')) return 0;
+    const b64 = dataUrl.split(';base64,')[1] || '';
+    if (!b64) return 0;
+    const padding = b64.endsWith('==') ? 2 : b64.endsWith('=') ? 1 : 0;
+    return Math.max(0, Math.floor((b64.length * 3) / 4) - padding);
   }
 
-  function createSamplePosterDataUrl(filename, subtitle) {
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="450" viewBox="0 0 800 450">
-      <defs>
-        <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stop-color="#0b3c5d"/>
-          <stop offset="100%" stop-color="#155eef"/>
-        </linearGradient>
-      </defs>
-      <rect width="800" height="450" rx="20" fill="url(#bg)"/>
-      <rect x="28" y="28" width="744" height="394" rx="14" fill="none" stroke="#f59e0b" stroke-width="2" stroke-opacity="0.6"/>
-      <text x="400" y="110" text-anchor="middle" fill="#fbbf24" font-family="sans-serif" font-size="18" font-weight="bold">GOVERNMENT COLLEGE OF ENGINEERING, SALEM (AUTONOMOUS)</text>
-      <text x="400" y="185" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="28" font-weight="bold">${escapeHtml(filename)}</text>
-      <text x="400" y="245" text-anchor="middle" fill="#e2e8f0" font-family="sans-serif" font-size="17">${escapeHtml(String(subtitle || 'Official Campus Event Poster').slice(0, 80))}</text>
-      <text x="400" y="360" text-anchor="middle" fill="#93c5fd" font-family="sans-serif" font-size="14">Digital Notice Board Verified Visual Attachment</text>
-    </svg>`;
-    return 'data:image/svg+xml;base64,' + window.btoa(unescape(encodeURIComponent(svg)));
+  function getRealAttachmentSize(att) {
+    if (!att) return 0;
+    const rawSize = Number(att.size || 0);
+    if (rawSize > 0 && !FAKE_DEMO_SIZES.has(rawSize)) {
+      return rawSize;
+    }
+    const fullData = cloudBlobComplete[att.id] || (att.isFullQuality ? att.dataUrl : '');
+    const b64Bytes = decodedBase64ByteLength(fullData);
+    if (b64Bytes > 0) return b64Bytes;
+    try {
+      const blob = buildDownloadBlob(att);
+      if (blob && blob.size > 0) return blob.size;
+    } catch (_) {}
+    return rawSize > 0 ? rawSize : 0;
+  }
+
+  function formatFileSize(bytes) {
+    const b = Math.max(0, Math.round(Number(bytes || 0)));
+    if (b < 1024) return `${b} B`;
+    if (b < 1048576) {
+      const kb = (b / 1024).toFixed(1).replace(/\.0$/, '');
+      return `${kb} KB`;
+    }
+    return `${(b / 1048576).toFixed(2).replace(/\.00$/, '')} MB`;
+  }
+
+  function normalizeBaseFilename(name) {
+    return String(name || '')
+      .toLowerCase()
+      .replace(/\.[a-z0-9]+$/i, '')
+      .replace(/\(\d+\)|__\d+_/g, '')
+      .replace(/[^a-z0-9]/g, '');
+  }
+
+  function isImageFilenameOrType(filename, fileType) {
+    const ext = String(filename || '').split('.').pop().toLowerCase();
+    return (
+      fileType === 'IMAGE' ||
+      ['jpg', 'jpeg', 'png', 'webp', 'gif', 'svg', 'bmp'].includes(ext)
+    );
+  }
+
+  function normalizeAttachmentDataUrl(dataUrl, filename, fileType) {
+    const raw = String(dataUrl || '');
+    if (!raw || !raw.includes(';base64,')) return '';
+    if (isImageFilenameOrType(filename, fileType) && !raw.startsWith('data:image/')) {
+      const ext = String(filename || '').split('.').pop().toLowerCase();
+      const mime =
+        ext === 'png'
+          ? 'image/png'
+          : ext === 'webp'
+          ? 'image/webp'
+          : ext === 'gif'
+          ? 'image/gif'
+          : ext === 'svg'
+          ? 'image/svg+xml'
+          : 'image/jpeg';
+      return `data:${mime};base64,${raw.split(';base64,')[1]}`;
+    }
+    return raw;
+  }
+
+  function createSampleDataUrl(filename, content) {
+    return 'data:text/plain;charset=utf-8,' + encodeURIComponent(content);
   }
 
   function createValidPdfBytes(title, bodyText) {
@@ -78,7 +134,8 @@
   function buildDownloadBlob(att) {
     const filename = String((att && att.filename) || 'GCE_Salem_Circular.pdf');
     const ext = filename.split('.').pop().toLowerCase();
-    const dataUrl = String((att && (att.dataUrl || cloudBlobComplete[att.id])) || '');
+    const rawDataUrl = String((att && (cloudBlobComplete[att.id] || att.dataUrl)) || '');
+    const dataUrl = normalizeAttachmentDataUrl(rawDataUrl, filename, att && att.fileType);
 
     // If a real uploaded file (base64 data URL) is stored, decode exact binary bytes
     if (dataUrl.startsWith('data:') && dataUrl.includes(';base64,')) {
@@ -98,22 +155,14 @@
     if (ext === 'pdf') {
       return new Blob([createValidPdfBytes(filename, preview)], { type: 'application/pdf' });
     }
-    if (['png', 'jpg', 'jpeg', 'svg', 'webp'].includes(ext) || (att && att.fileType === 'IMAGE')) {
-      const posterUrl = createSamplePosterDataUrl(filename, preview);
-      const b64 = posterUrl.split(';base64,')[1];
-      const bin = window.atob(b64);
-      const bytes = new Uint8Array(bin.length);
-      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-      return new Blob([bytes], { type: 'image/svg+xml' });
-    }
     if (ext === 'xls' || ext === 'xlsx' || ext === 'csv') {
       const csvContent = preview.includes(',')
         ? preview
         : `Document,Department,Details\n"${filename.replace(/"/g, '""')}","GCE Salem","${preview.replace(/\r?\n/g, ' ').replace(/"/g, '""')}"`;
       return new Blob([csvContent], { type: 'text/csv;charset=utf-8' });
     }
-    if (dataUrl.startsWith('data:text/plain;charset=utf-8,')) {
-      const decoded = decodeURIComponent(dataUrl.slice('data:text/plain;charset=utf-8,'.length));
+    if (rawDataUrl.startsWith('data:text/plain;charset=utf-8,')) {
+      const decoded = decodeURIComponent(rawDataUrl.slice('data:text/plain;charset=utf-8,'.length));
       if (ext === 'pdf') {
         return new Blob([createValidPdfBytes(filename, decoded)], { type: 'application/pdf' });
       }
@@ -122,38 +171,102 @@
     return new Blob([preview], { type: 'text/plain;charset=utf-8' });
   }
 
+  function findSiblingOrIndexedMatch(att) {
+    if (!att) return null;
+    const targetBase = normalizeBaseFilename(att.filename);
+    const targetSize = Number(att.size || 0);
+
+    // 1. Check other notices in db for an attachment with the same file size or base filename that has remoteUrl or full dataUrl
+    for (const n of db.notices || []) {
+      for (const other of n.attachments || []) {
+        if (!other || other === att) continue;
+        const sameSize = targetSize > 0 && Number(other.size) === targetSize;
+        const sameName = targetBase && normalizeBaseFilename(other.filename) === targetBase;
+        if (sameSize || sameName) {
+          const validSize = Number(other.size || 0) > 0 && !FAKE_DEMO_SIZES.has(Number(other.size)) ? Number(other.size) : 0;
+          if (cloudBlobComplete[other.id]) {
+            return { dataUrl: cloudBlobComplete[other.id], remoteUrl: other.remoteUrl || '', size: validSize };
+          }
+          if (other.remoteUrl) {
+            return { dataUrl: other.dataUrl || '', remoteUrl: other.remoteUrl, size: validSize };
+          }
+          if (other.dataUrl && other.dataUrl.includes(';base64,') && other.dataUrl.length > (att.dataUrl || '').length) {
+            return { dataUrl: other.dataUrl, remoteUrl: other.remoteUrl || '', size: validSize };
+          }
+        }
+      }
+    }
+
+    // 2. Check cloudFilesByMeta indexed from CLOUD_FILES_URL
+    for (const item of cloudFilesByMeta) {
+      const sameSize = targetSize > 0 && item.size === targetSize;
+      const sameName = targetBase && item.baseKey === targetBase;
+      if ((sameSize || sameName) && item.url) {
+        return { dataUrl: '', remoteUrl: item.url, size: item.size || 0 };
+      }
+    }
+    return null;
+  }
+
   async function ensureAttachmentHydrated(att) {
     if (!att) return att;
-    if (att.dataUrl && att.dataUrl.includes(';base64,')) {
-      return att;
-    }
+    att.dataUrl = normalizeAttachmentDataUrl(att.dataUrl, att.filename, att.fileType);
+
     if (cloudBlobComplete[att.id]) {
-      att.dataUrl = cloudBlobComplete[att.id];
+      att.dataUrl = normalizeAttachmentDataUrl(cloudBlobComplete[att.id], att.filename, att.fileType);
+      att.isFullQuality = true;
       saveDb(db);
       return att;
     }
-    // Pull any recent chunks from CLOUD_BLOBS_URL
+
+    if (att.isFullQuality && att.dataUrl && att.dataUrl.includes(';base64,') && att.dataUrl.length > 4000) {
+      return att;
+    }
+
+    // Pull any recent blobs and files index from cloud
     await syncCloudBlobs();
+
     if (cloudBlobComplete[att.id]) {
-      att.dataUrl = cloudBlobComplete[att.id];
+      att.dataUrl = normalizeAttachmentDataUrl(cloudBlobComplete[att.id], att.filename, att.fileType);
+      att.isFullQuality = true;
       saveDb(db);
       return att;
     }
+
+    // Check if a sibling attachment or indexed file matches by size or filename
+    if (!att.remoteUrl) {
+      const match = findSiblingOrIndexedMatch(att);
+      if (match) {
+        if (match.remoteUrl) att.remoteUrl = match.remoteUrl;
+        if (match.size && match.size > 0 && !FAKE_DEMO_SIZES.has(match.size)) {
+          att.size = match.size;
+        }
+        if (match.dataUrl && match.dataUrl.length > (att.dataUrl || '').length) {
+          att.dataUrl = normalizeAttachmentDataUrl(match.dataUrl, att.filename, att.fileType);
+        }
+      }
+    }
+
     // If remoteUrl is available from ntfy file upload, fetch binary and convert to dataUrl
     if (att.remoteUrl) {
       try {
         const resp = await fetch(att.remoteUrl);
         if (resp.ok) {
           const blob = await resp.blob();
+          if (blob && blob.size > 0) {
+            att.size = blob.size;
+          }
           const fetchedDataUrl = await new Promise(resolve => {
             const reader = new FileReader();
             reader.onload = () => resolve(String(reader.result || ''));
             reader.onerror = () => resolve('');
             reader.readAsDataURL(blob);
           });
-          if (fetchedDataUrl && fetchedDataUrl.includes(';base64,')) {
-            att.dataUrl = fetchedDataUrl;
-            cloudBlobComplete[att.id] = fetchedDataUrl;
+          const normalized = normalizeAttachmentDataUrl(fetchedDataUrl, att.filename, att.fileType);
+          if (normalized && normalized.includes(';base64,')) {
+            att.dataUrl = normalized;
+            att.isFullQuality = true;
+            cloudBlobComplete[att.id] = normalized;
             saveDb(db);
             return att;
           }
@@ -273,7 +386,7 @@
               id: 1,
               filename: 'GCE_Salem_End_Sem_Timetable_NovDec2026.pdf',
               fileType: 'PDF',
-              size: 1420500,
+              size: 0,
               previewText: 'CONTROLLER OF EXAMINATIONS — GCE SALEM (AUTONOMOUS)\nForenoon Session: 09:30 AM – 12:30 PM\nAfternoon Session: 01:30 PM – 04:30 PM\nAll departments (CIVIL, MECH, ECE, EEE, CSE, METT, AIML) theory examinations commence from 16-Nov-2026.',
               dataUrl: createSampleDataUrl('GCE_Salem_End_Sem_Timetable_NovDec2026.pdf', 'GCE SALEM OFFICIAL EXAMINATION TIMETABLE NOV/DEC 2026')
             }
@@ -297,7 +410,7 @@
               id: 2,
               filename: 'Eligible_Students_Placement_Drive_2026.xlsx',
               fileType: 'XLS',
-              size: 582400,
+              size: 0,
               previewText: 'Shortlisted Candidates across CIVIL, MECH, ECE, EEE, CSE, METT, AIML.\nVenue: Central Computing Centre Lab 1 & 2.',
               dataUrl: createSampleDataUrl('Eligible_Students_Placement_Drive_2026.xlsx', 'RegNo,Role,Department,CGPA,Slot\n737722104001,Student 1 - CSE,CSE,8.7,Batch-1')
             }
@@ -319,11 +432,11 @@
           attachments: [
             {
               id: 3,
-              filename: 'SIH_2026_Campus_Poster.png',
-              fileType: 'IMAGE',
-              size: 1940000,
-              previewText: 'SIH 2026 Internal Hackathon Poster — Venue: CSE Seminar Hall',
-              dataUrl: ''
+              filename: 'SIH_2026_Internal_Evaluation_Circular.pdf',
+              fileType: 'PDF',
+              size: 0,
+              previewText: 'SMART INDIA HACKATHON (SIH 2026) — INTERNAL EVALUATION\nVenue: CSE Seminar Hall 1\nEligibility: 6-member student teams across CSE & AIML.',
+              dataUrl: createSampleDataUrl('SIH_2026_Internal_Evaluation_Circular.pdf', 'SIH 2026 Internal Hackathon Circular — Venue: CSE Seminar Hall')
             }
           ]
         },
@@ -345,7 +458,7 @@
               id: 4,
               filename: 'CSE_Model_Lab_Batches_2026.docx',
               fileType: 'DOC',
-              size: 345000,
+              size: 0,
               previewText: 'Batch A: Student 1 - CSE to Student 5 - CSE (09:00 AM)\nBatch B: Student 6 - CSE to Student 10 - CSE (01:30 PM)\nObservation notebook and Lab Coat mandatory.',
               dataUrl: createSampleDataUrl('CSE_Model_Lab_Batches_2026.docx', 'CSE Model Lab Schedule - Batch A & Batch B')
             }
@@ -375,13 +488,30 @@
   function loadDb() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) {
-        const initial = defaultDatabase();
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(initial));
-        return initial;
-      }
-      const parsed = JSON.parse(raw);
+      const parsed = raw ? JSON.parse(raw) : defaultDatabase();
       parsed.deletedIds = parsed.deletedIds || [];
+      // Clean up any stale text/plain placeholder dataUrls and compute exact real byte sizes
+      (parsed.notices || []).forEach(n => {
+        if (n.id === 103 && n.attachments && n.attachments[0] && n.attachments[0].filename === 'SIH_2026_Campus_Poster.png') {
+          n.attachments[0] = {
+            id: 3,
+            filename: 'SIH_2026_Internal_Evaluation_Circular.pdf',
+            fileType: 'PDF',
+            size: 0,
+            previewText: 'SMART INDIA HACKATHON (SIH 2026) — INTERNAL EVALUATION\nVenue: CSE Seminar Hall 1\nEligibility: 6-member student teams across CSE & AIML.',
+            dataUrl: ''
+          };
+        }
+        (n.attachments || []).forEach(a => {
+          if (isImageFilenameOrType(a.filename, a.fileType) && a.dataUrl && !a.dataUrl.includes(';base64,')) {
+            a.dataUrl = '';
+          } else if (a.dataUrl && a.dataUrl.includes(';base64,')) {
+            a.dataUrl = normalizeAttachmentDataUrl(a.dataUrl, a.filename, a.fileType);
+          }
+          a.size = getRealAttachmentSize(a);
+        });
+      });
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed));
       return parsed;
     } catch (_) {
       return defaultDatabase();
@@ -391,7 +521,21 @@
   function saveDb(db) {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(db));
-    } catch (_) {}
+    } catch (_) {
+      // If localStorage quota is exceeded, trim large base64 strings on older notices to their compact inlineDataUrl
+      try {
+        (db.notices || []).slice(2).forEach(n => {
+          (n.attachments || []).forEach(a => {
+            if (a.dataUrl && a.dataUrl.length > 40000) {
+              cloudBlobComplete[a.id] = a.dataUrl;
+              a.dataUrl = a.inlineDataUrl || '';
+              a.isFullQuality = false;
+            }
+          });
+        });
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(db));
+      } catch (_2) {}
+    }
   }
 
   let db = loadDb();
@@ -522,16 +666,27 @@
         visibility: String(incoming.visibility || 'PUBLIC'),
         attachments: (incoming.attachments || []).map(a => {
           const attId = Number(a.id || Date.now());
-          const syncedDataUrl = a.dataUrl || cloudBlobComplete[attId] || '';
-          return {
+          const filename = String(a.filename || 'Circular.pdf');
+          const fileType = String(a.fileType || 'PDF');
+          const fullBlob = cloudBlobComplete[attId] || '';
+          const incomingDataUrl = normalizeAttachmentDataUrl(a.dataUrl || '', filename, fileType);
+          const bestDataUrl = fullBlob
+            ? normalizeAttachmentDataUrl(fullBlob, filename, fileType)
+            : incomingDataUrl;
+          const rawIncomingSize = Number(a.size || 0);
+          const attRecord = {
             id: attId,
-            filename: String(a.filename || 'Circular.pdf'),
-            fileType: String(a.fileType || 'PDF'),
-            size: Number(a.size || 102400),
+            filename,
+            fileType,
+            size: FAKE_DEMO_SIZES.has(rawIncomingSize) ? 0 : rawIncomingSize,
             previewText: String(a.previewText || 'Official GCE Salem Circular'),
             remoteUrl: String(a.remoteUrl || ''),
-            dataUrl: syncedDataUrl || createSampleDataUrl(a.filename || 'Circular.pdf', a.previewText || a.filename || 'GCE Salem Circular')
+            inlineDataUrl: incomingDataUrl && incomingDataUrl.length <= 3600 ? incomingDataUrl : '',
+            isFullQuality: Boolean(fullBlob || (incomingDataUrl && incomingDataUrl.length > 4000)),
+            dataUrl: bestDataUrl
           };
+          attRecord.size = getRealAttachmentSize(attRecord);
+          return attRecord;
         })
       };
 
@@ -543,8 +698,17 @@
         if (existingAtts.length) {
           normalized.attachments = (normalized.attachments || []).map(att => {
             const match = existingAtts.find(e => e.id === att.id || e.filename === att.filename);
-            if (match && match.dataUrl && match.dataUrl.includes(';base64,') && (!att.dataUrl || !att.dataUrl.includes(';base64,'))) {
-              return { ...att, dataUrl: match.dataUrl, remoteUrl: att.remoteUrl || match.remoteUrl || '' };
+            if (match) {
+              const existingUrl = normalizeAttachmentDataUrl(match.dataUrl || '', att.filename, att.fileType);
+              const newUrl = normalizeAttachmentDataUrl(att.dataUrl || '', att.filename, att.fileType);
+              const bestUrl = existingUrl.length >= newUrl.length ? existingUrl : newUrl;
+              return {
+                ...att,
+                dataUrl: bestUrl,
+                inlineDataUrl: att.inlineDataUrl || match.inlineDataUrl || '',
+                isFullQuality: Boolean(match.isFullQuality || att.isFullQuality || bestUrl.length > 4000),
+                remoteUrl: att.remoteUrl || match.remoteUrl || ''
+              };
             }
             return att;
           });
@@ -564,8 +728,31 @@
     return false;
   }
 
+  function applyFullBlobToNotices(attId, fullDataUrl) {
+    if (!attId || !fullDataUrl || !fullDataUrl.startsWith('data:')) return false;
+    cloudBlobComplete[attId] = fullDataUrl;
+    let updated = false;
+    db.notices.forEach(n => {
+      (n.attachments || []).forEach(a => {
+        if (Number(a.id) === Number(attId)) {
+          const norm = normalizeAttachmentDataUrl(fullDataUrl, a.filename, a.fileType);
+          if (norm && norm.length > (a.dataUrl || '').length) {
+            a.dataUrl = norm;
+            a.isFullQuality = true;
+            updated = true;
+          }
+        }
+      });
+    });
+    return updated;
+  }
+
   function applyBlobChunkPayload(payload) {
-    if (!payload || payload.action !== 'FILE_CHUNK' || !payload.attId) return false;
+    if (!payload) return false;
+    if (payload.action === 'FILE_FULL' && payload.attId && payload.dataUrl) {
+      return applyFullBlobToNotices(Number(payload.attId), String(payload.dataUrl));
+    }
+    if (payload.action !== 'FILE_CHUNK' || !payload.attId) return false;
     const attId = Number(payload.attId);
     const total = Number(payload.total || 1);
     const idx = Number(payload.idx || 0);
@@ -584,25 +771,15 @@
         full += entry.parts[i] || '';
       }
       if (full.startsWith('data:')) {
-        cloudBlobComplete[attId] = full;
-        let updated = false;
-        db.notices.forEach(n => {
-          (n.attachments || []).forEach(a => {
-            if (Number(a.id) === attId && (!a.dataUrl || !a.dataUrl.includes(';base64,'))) {
-              a.dataUrl = full;
-              updated = true;
-            }
-          });
-        });
-        return updated;
+        return applyFullBlobToNotices(attId, full);
       }
     }
     return false;
   }
 
-  async function syncCloudBlobs() {
+  async function syncCloudFilesIndex() {
     try {
-      const resp = await fetch(`${CLOUD_BLOBS_URL}/json?poll=1&since=24h&_t=${Date.now()}`, {
+      const resp = await fetch(`${CLOUD_FILES_URL}/json?poll=1&since=24h&_t=${Date.now()}`, {
         cache: 'no-store'
       });
       if (!resp.ok) return false;
@@ -612,7 +789,66 @@
       for (const line of lines) {
         try {
           const env = JSON.parse(line);
-          if (env.event === 'message' && env.message) {
+          if (env.event === 'message' && env.attachment && env.attachment.url) {
+            const name = String(env.attachment.name || '');
+            const size = Number(env.attachment.size || 0);
+            const url = String(env.attachment.url);
+            const baseKey = normalizeBaseFilename(name);
+            if (!cloudFilesByMeta.some(x => x.url === url)) {
+              cloudFilesByMeta.push({ name, baseKey, size, url });
+            }
+            // Link any notice attachment missing remoteUrl that matches size or baseKey
+            db.notices.forEach(n => {
+              (n.attachments || []).forEach(a => {
+                const sameSize = size > 0 && Number(a.size) === size;
+                const sameName = baseKey && normalizeBaseFilename(a.filename) === baseKey;
+                if (sameSize || sameName) {
+                  if (!a.remoteUrl) {
+                    a.remoteUrl = url;
+                    updated = true;
+                  }
+                  if (size > 0 && Number(a.size) !== size) {
+                    a.size = size;
+                    updated = true;
+                  }
+                }
+              });
+            });
+          }
+        } catch (_) {}
+      }
+      return updated;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  async function syncCloudBlobs() {
+    let updated = false;
+    try {
+      if (await syncCloudFilesIndex()) updated = true;
+      const resp = await fetch(`${CLOUD_BLOBS_URL}/json?poll=1&since=24h&_t=${Date.now()}`, {
+        cache: 'no-store'
+      });
+      if (!resp.ok) return updated;
+      const text = await resp.text();
+      const lines = text.trim().split('\n').filter(Boolean);
+      for (const line of lines) {
+        try {
+          const env = JSON.parse(line);
+          if (env.event !== 'message') continue;
+          if (env.attachment && env.attachment.url) {
+            if (!processedBlobMsgIds.has(env.id)) {
+              processedBlobMsgIds.add(env.id);
+              try {
+                const attResp = await fetch(env.attachment.url);
+                if (attResp.ok) {
+                  const payload = await attResp.json();
+                  if (applyBlobChunkPayload(payload)) updated = true;
+                }
+              } catch (_) {}
+            }
+          } else if (env.message) {
             const payload = JSON.parse(env.message);
             if (applyBlobChunkPayload(payload)) updated = true;
           }
@@ -621,27 +857,26 @@
       if (updated) saveDb(db);
       return updated;
     } catch (_) {
-      return false;
+      return updated;
     }
   }
 
-  async function compressImageDataUrlForSync(dataUrl) {
-    if (!dataUrl || !dataUrl.startsWith('data:image/') || dataUrl.length <= 45000) {
+  async function createResizedImageDataUrl(dataUrl, maxDim, quality) {
+    if (!dataUrl || !dataUrl.startsWith('data:image/')) {
       return dataUrl;
     }
     return new Promise(resolve => {
       const img = new Image();
       img.onload = () => {
         try {
-          const maxDim = 900;
           let w = img.width || 600;
           let h = img.height || 400;
           if (w > maxDim || h > maxDim) {
             if (w > h) {
-              h = Math.round((h * maxDim) / w);
+              h = Math.max(1, Math.round((h * maxDim) / w));
               w = maxDim;
             } else {
-              w = Math.round((w * maxDim) / h);
+              w = Math.max(1, Math.round((w * maxDim) / h));
               h = maxDim;
             }
           }
@@ -652,8 +887,8 @@
           ctx.fillStyle = '#ffffff';
           ctx.fillRect(0, 0, w, h);
           ctx.drawImage(img, 0, 0, w, h);
-          const compressed = c.toDataURL('image/jpeg', 0.76);
-          resolve(compressed.length < dataUrl.length ? compressed : dataUrl);
+          const out = c.toDataURL('image/jpeg', quality);
+          resolve(out);
         } catch (_) {
           resolve(dataUrl);
         }
@@ -665,66 +900,72 @@
 
   async function uploadAttachmentToCloud(att, rawFile) {
     if (!att) return;
-    // 1. Try direct binary file upload to CLOUD_FILES_URL so ntfy hosts the full file URL
-    try {
-      const blobToUpload = rawFile || buildDownloadBlob(att);
-      const safeName = String(att.filename || 'attachment.bin').replace(/[^a-zA-Z0-9._-]/g, '_');
-      const putResp = await fetch(CLOUD_FILES_URL, {
-        method: 'PUT',
-        headers: {
-          Filename: safeName
-        },
-        body: blobToUpload
-      });
-      if (putResp.ok) {
-        const meta = await putResp.json();
-        if (meta && meta.attachment && meta.attachment.url) {
-          att.remoteUrl = meta.attachment.url;
-        }
-      }
-    } catch (_) {}
+    const safeName = String(att.filename || 'attachment.bin').replace(/[^a-zA-Z0-9._-]/g, '_');
 
-    // 2. Also push safe 2,600-char base64 chunks to CLOUD_BLOBS_URL so all devices can preview/download even without PUT
-    try {
-      let syncUrl = att.dataUrl || '';
-      if (syncUrl.startsWith('data:image/')) {
-        syncUrl = await compressImageDataUrlForSync(syncUrl);
-      }
-      if (syncUrl && syncUrl.startsWith('data:') && syncUrl.length <= 160000) {
-        const chunkSize = 2600;
-        const total = Math.ceil(syncUrl.length / chunkSize);
-        for (let idx = 0; idx < total; idx++) {
-          const chunk = syncUrl.slice(idx * chunkSize, (idx + 1) * chunkSize);
-          await fetch(CLOUD_BLOBS_URL, {
+    // Run direct binary PUT to CLOUD_FILES_URL and single-POST FILE_FULL to CLOUD_BLOBS_URL in parallel
+    const putPromise = (async () => {
+      try {
+        const blobToUpload = rawFile || buildDownloadBlob(att);
+        const putResp = await fetch(CLOUD_FILES_URL, {
+          method: 'PUT',
+          headers: { Filename: safeName },
+          body: blobToUpload
+        });
+        if (putResp.ok) {
+          const meta = await putResp.json();
+          if (meta && meta.attachment && meta.attachment.url) {
+            att.remoteUrl = meta.attachment.url;
+          }
+        }
+      } catch (_) {}
+    })();
+
+    const postBlobPromise = (async () => {
+      try {
+        const syncUrl = att.dataUrl || '';
+        if (syncUrl && syncUrl.startsWith('data:') && syncUrl.length <= 280000) {
+          const resp = await fetch(CLOUD_BLOBS_URL, {
             method: 'POST',
             headers: { 'Content-Type': 'text/plain;charset=utf-8' },
             body: JSON.stringify({
-              action: 'FILE_CHUNK',
+              action: 'FILE_FULL',
               attId: att.id,
-              idx,
-              total,
-              chunk
+              filename: att.filename,
+              size: att.size,
+              dataUrl: syncUrl
             })
           });
+          if (resp.ok && !att.remoteUrl) {
+            try {
+              const meta = await resp.json();
+              if (meta && meta.attachment && meta.attachment.url && !syncUrl.startsWith('data:')) {
+                att.remoteUrl = meta.attachment.url;
+              }
+            } catch (_) {}
+          }
         }
-      }
-    } catch (_) {}
+      } catch (_) {}
+    })();
+
+    await Promise.allSettled([putPromise, postBlobPromise]);
   }
 
   async function publishCloudEvent(eventObj) {
     try {
       const compactEvent = JSON.parse(JSON.stringify(eventObj));
       if (compactEvent.notice && compactEvent.notice.attachments) {
-        compactEvent.notice.attachments = compactEvent.notice.attachments.map(a => ({
-          id: a.id,
-          filename: a.filename,
-          fileType: a.fileType,
-          size: a.size,
-          remoteUrl: a.remoteUrl || '',
-          previewText: String(a.previewText || '').slice(0, 280),
-          // Keep inline dataUrl only if <= 1800 chars so total JSON message is always < 4096 bytes
-          dataUrl: a.dataUrl && String(a.dataUrl).length <= 1800 ? a.dataUrl : undefined
-        }));
+        compactEvent.notice.attachments = compactEvent.notice.attachments.map(a => {
+          const inlineCandidate = a.inlineDataUrl || (a.dataUrl && String(a.dataUrl).length <= 2800 ? a.dataUrl : '');
+          return {
+            id: a.id,
+            filename: a.filename,
+            fileType: a.fileType,
+            size: a.size,
+            remoteUrl: a.remoteUrl || '',
+            previewText: String(a.previewText || '').slice(0, 240),
+            dataUrl: inlineCandidate && String(inlineCandidate).length <= 2800 ? inlineCandidate : undefined
+          };
+        });
       }
       await fetch(CLOUD_SYNC_URL, {
         method: 'POST',
@@ -782,12 +1023,20 @@
       es.onmessage = async ev => {
         try {
           const env = JSON.parse(ev.data);
-          if (env.event === 'message' && env.message) {
-            const payload = JSON.parse(env.message);
-            await syncCloudBlobs();
-            if (applyCloudPayload(payload)) {
-              saveDb(db);
-              renderNotices();
+          if (env.event === 'message') {
+            let payload = null;
+            if (env.attachment && env.attachment.url) {
+              const r = await fetch(env.attachment.url);
+              if (r.ok) payload = await r.json();
+            } else if (env.message) {
+              payload = JSON.parse(env.message);
+            }
+            if (payload) {
+              await syncCloudBlobs();
+              if (applyCloudPayload(payload)) {
+                saveDb(db);
+                renderNotices();
+              }
             }
           }
         } catch (_) {}
@@ -1052,13 +1301,13 @@
         const attachmentsHtml = (n.attachments || [])
           .map(
             a => `
-            <div class="attachment" style="display:inline-flex;align-items:center;gap:8px;padding:6px 10px;">
-              <button type="button" data-download-notice="${n.id}" data-download-att="${a.id}" style="all:unset;cursor:pointer;display:inline-flex;align-items:center;gap:6px;font-weight:700;color:var(--accent);" title="Download ${escapeHtml(a.filename)}">
+            <div class="attachment" style="display:inline-flex;align-items:center;gap:8px;padding:6px 10px;flex-wrap:wrap;max-width:100%;">
+              <button type="button" data-download-notice="${n.id}" data-download-att="${a.id}" style="all:unset;cursor:pointer;display:inline-flex;align-items:center;gap:6px;font-weight:700;color:var(--accent);flex-wrap:wrap;" title="Download ${escapeHtml(a.filename)}">
                 <span>⬇ Download</span>
-                <span>${escapeHtml(a.filename)}</span>
-                <small style="color:var(--muted);font-weight:500;">(${(Number(a.size || 102400) / 1048576).toFixed(2)} MB)</small>
+                <span style="word-break:break-all;">${escapeHtml(a.filename)}</span>
+                <small style="color:var(--muted);font-weight:500;">(${formatFileSize(getRealAttachmentSize(a))})</small>
               </button>
-              <button type="button" data-preview-notice="${n.id}" data-preview-att="${a.id}" style="border:1px solid var(--line);background:var(--surface);color:var(--text);border-radius:6px;padding:2px 7px;font-size:11px;font-weight:600;cursor:pointer;" title="Preview attachment">
+              <button type="button" data-preview-notice="${n.id}" data-preview-att="${a.id}" style="border:1px solid var(--line);background:var(--surface);color:var(--text);border-radius:6px;padding:3px 8px;font-size:11px;font-weight:600;cursor:pointer;" title="Preview attachment">
                 Preview
               </button>
             </div>`
@@ -1290,101 +1539,130 @@
     const files = Array.from(noticeFilesInput.files || []);
     const uploadedAttachments = [];
     const rawFileMap = {};
-    for (const file of files) {
-      if (file.size > 10 * 1024 * 1024) {
-        window.alert(`File ${file.name} exceeds the 10 MB limit.`);
-        return;
-      }
-      const dataUrl = await new Promise(resolve => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result || ''));
-        reader.onerror = () => resolve('');
-        reader.readAsDataURL(file);
-      });
-      const ext = file.name.split('.').pop().toUpperCase();
-      let snippet = `Attached Circular: ${file.name} (${(file.size / 1024).toFixed(1)} KB) — Uploaded by ${currentUser.fullName}`;
-      if (['TXT', 'CSV'].includes(ext) && file.size < 200000) {
-        const textContent = await new Promise(resolve => {
-          const r = new FileReader();
-          r.onload = () => resolve(String(r.result || ''));
-          r.onerror = () => resolve('');
-          r.readAsText(file);
-        });
-        if (textContent.trim()) {
-          snippet = textContent.trim().slice(0, 600);
+    btnSubmitNotice.disabled = true;
+    btnSubmitNotice.textContent = files.length ? 'Uploading & publishing…' : 'Publishing…';
+
+    try {
+      for (const file of files) {
+        if (file.size > 10 * 1024 * 1024) {
+          window.alert(`File ${file.name} exceeds the 10 MB limit.`);
+          btnSubmitNotice.disabled = false;
+          btnSubmitNotice.textContent = 'Publish notice →';
+          return;
         }
+        const ext = file.name.split('.').pop().toUpperCase();
+        const fileType = ['JPG', 'JPEG', 'PNG', 'WEBP', 'GIF', 'SVG', 'BMP'].includes(ext) ? 'IMAGE' : ext;
+
+        const rawDataUrl = await new Promise(resolve => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result || ''));
+          reader.onerror = () => resolve('');
+          reader.readAsDataURL(file);
+        });
+        let dataUrl = normalizeAttachmentDataUrl(rawDataUrl, file.name, fileType);
+        let inlineDataUrl = '';
+
+        if (fileType === 'IMAGE' && dataUrl.startsWith('data:image/')) {
+          inlineDataUrl = await createResizedImageDataUrl(dataUrl, 160, 0.46);
+        }
+
+        let snippet = `Attached Circular: ${file.name} (${formatFileSize(file.size)}) — Uploaded by ${currentUser.fullName}`;
+        if (['TXT', 'CSV'].includes(ext) && file.size < 200000) {
+          const textContent = await new Promise(resolve => {
+            const r = new FileReader();
+            r.onload = () => resolve(String(r.result || ''));
+            r.onerror = () => resolve('');
+            r.readAsText(file);
+          });
+          if (textContent.trim()) {
+            snippet = textContent.trim().slice(0, 600);
+          }
+        }
+        const attId = Date.now() + Math.floor(Math.random() * 1000);
+        if (dataUrl && dataUrl.includes(';base64,')) {
+          cloudBlobComplete[attId] = dataUrl;
+        }
+        const attObj = {
+          id: attId,
+          filename: file.name,
+          fileType,
+          size: file.size,
+          previewText: snippet,
+          remoteUrl: '',
+          inlineDataUrl,
+          isFullQuality: true,
+          dataUrl
+        };
+        uploadedAttachments.push(attObj);
+        rawFileMap[attId] = file;
       }
-      const attId = Date.now() + Math.floor(Math.random() * 1000);
-      const attObj = {
-        id: attId,
-        filename: file.name,
-        fileType: ['JPG', 'JPEG', 'PNG', 'WEBP', 'GIF', 'SVG'].includes(ext) ? 'IMAGE' : ext,
-        size: file.size,
-        previewText: snippet,
-        remoteUrl: '',
-        dataUrl
-      };
-      uploadedAttachments.push(attObj);
-      rawFileMap[attId] = file;
-    }
 
-    const expiryVal = noticeExpiryInput.value ? new Date(noticeExpiryInput.value).getTime() : 0;
-    const editId = Number(editNoticeIdInput.value);
-    let savedNotice = null;
+      const expiryVal = noticeExpiryInput.value ? new Date(noticeExpiryInput.value).getTime() : 0;
+      const editId = Number(editNoticeIdInput.value);
+      let savedNotice = null;
 
-    if (editId) {
-      const idx = db.notices.findIndex(n => Number(n.id) === editId);
-      if (idx !== -1) {
-        db.notices[idx] = {
-          ...db.notices[idx],
+      if (editId) {
+        const idx = db.notices.findIndex(n => Number(n.id) === editId);
+        if (idx !== -1) {
+          db.notices[idx] = {
+            ...db.notices[idx],
+            title,
+            description,
+            department: dept,
+            category: noticeCategorySelect.value,
+            priority: noticePrioritySelect.value,
+            expiresAt: expiryVal || db.notices[idx].expiresAt,
+            visibility: noticeVisibilitySelect.value,
+            isPinned: currentUser.role === 'Administrator' ? noticePinnedCheckbox.checked : db.notices[idx].isPinned,
+            attachments: uploadedAttachments.length
+              ? [...(db.notices[idx].attachments || []), ...uploadedAttachments]
+              : db.notices[idx].attachments
+          };
+          savedNotice = db.notices[idx];
+        }
+      } else {
+        savedNotice = {
+          id: Date.now(),
           title,
           description,
           department: dept,
           category: noticeCategorySelect.value,
           priority: noticePrioritySelect.value,
-          expiresAt: expiryVal || db.notices[idx].expiresAt,
+          authorLoginId: currentUser.loginId,
+          authorName: currentUser.fullName,
+          publishedAt: nowMs(),
+          expiresAt: expiryVal,
+          isPinned: currentUser.role === 'Administrator' ? noticePinnedCheckbox.checked : false,
           visibility: noticeVisibilitySelect.value,
-          isPinned: currentUser.role === 'Administrator' ? noticePinnedCheckbox.checked : db.notices[idx].isPinned,
-          attachments: uploadedAttachments.length
-            ? [...(db.notices[idx].attachments || []), ...uploadedAttachments]
-            : db.notices[idx].attachments
+          attachments: uploadedAttachments
         };
-        savedNotice = db.notices[idx];
+        db.notices.unshift(savedNotice);
       }
-    } else {
-      savedNotice = {
-        id: Date.now(),
-        title,
-        description,
-        department: dept,
-        category: noticeCategorySelect.value,
-        priority: noticePrioritySelect.value,
-        authorLoginId: currentUser.loginId,
-        authorName: currentUser.fullName,
-        publishedAt: nowMs(),
-        expiresAt: expiryVal,
-        isPinned: currentUser.role === 'Administrator' ? noticePinnedCheckbox.checked : false,
-        visibility: noticeVisibilitySelect.value,
-        attachments: uploadedAttachments
-      };
-      db.notices.unshift(savedNotice);
-    }
 
-    saveDb(db);
-    noticeForm.reset();
-    editNoticeIdInput.value = '';
-    formSectionTitle.textContent = 'Publish a notice';
-    btnSubmitNotice.textContent = 'Publish notice →';
-    btnCancelEdit.classList.add('hidden');
-    renderNotices();
-    document.getElementById('notices').scrollIntoView({ behavior: 'smooth' });
-
-    if (savedNotice) {
-      for (const att of uploadedAttachments) {
-        await uploadAttachmentToCloud(att, rawFileMap[att.id]);
-      }
       saveDb(db);
-      await publishCloudEvent({ action: 'UPSERT', notice: savedNotice });
+      noticeForm.reset();
+      editNoticeIdInput.value = '';
+      formSectionTitle.textContent = 'Publish a notice';
+      btnSubmitNotice.disabled = false;
+      btnSubmitNotice.textContent = 'Publish notice →';
+      btnCancelEdit.classList.add('hidden');
+      renderNotices();
+      document.getElementById('notices').scrollIntoView({ behavior: 'smooth' });
+
+      if (savedNotice) {
+        // 1. Broadcast notice immediately with inline preview so other phones see it within 1 second
+        await publishCloudEvent({ action: 'UPSERT', notice: savedNotice });
+        // 2. Upload full high-res binary & blob in parallel and update remoteUrl
+        if (uploadedAttachments.length > 0) {
+          for (const att of uploadedAttachments) {
+            await uploadAttachmentToCloud(att, rawFileMap[att.id]);
+          }
+          saveDb(db);
+          await publishCloudEvent({ action: 'UPSERT', notice: savedNotice });
+        }
+      }
+    } finally {
+      btnSubmitNotice.disabled = false;
     }
   });
 
@@ -1400,45 +1678,80 @@
       activePreviewBlobUrl = null;
     }
 
-    document.getElementById('preview-title').textContent = att.filename;
-    const bodyEl = document.getElementById('preview-body');
-    bodyEl.innerHTML = `<div style="padding:18px;text-align:center;color:#475467;">Loading attachment preview…</div>`;
-    previewModal.classList.add('open');
-
-    await ensureAttachmentHydrated(att);
-
     const filename = String(att.filename || 'Circular.pdf');
     const ext = filename.split('.').pop().toLowerCase();
-    const isImage =
-      att.fileType === 'IMAGE' ||
-      ['jpg', 'jpeg', 'png', 'webp', 'gif', 'svg'].includes(ext) ||
-      (att.dataUrl && att.dataUrl.startsWith('data:image/'));
+    const isImage = isImageFilenameOrType(filename, att.fileType);
     const isPdf =
       att.fileType === 'PDF' ||
       ext === 'pdf' ||
       (att.dataUrl && att.dataUrl.startsWith('data:application/pdf'));
 
+    document.getElementById('preview-title').textContent = filename;
+    const bodyEl = document.getElementById('preview-body');
+    previewModal.classList.add('open');
+
+    // If image already has an inline or full dataUrl/remoteUrl, render it immediately while upgrading to full quality
+    if (isImage) {
+      const initialUrl = normalizeAttachmentDataUrl(att.dataUrl, filename, att.fileType) || att.remoteUrl || '';
+      if (initialUrl) {
+        bodyEl.innerHTML = `
+          <div style="text-align:center;background:#0f172a;padding:12px;border-radius:12px;">
+            <img id="preview-live-img" src="${escapeHtml(initialUrl)}" alt="${escapeHtml(filename)}" style="max-width:100%;max-height:55vh;border-radius:8px;object-fit:contain;display:block;margin:0 auto;">
+          </div>
+          <div style="margin-top:10px;font-size:12px;color:#475467;display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;">
+            <span><b>File:</b> ${escapeHtml(filename)}</span>
+            <span><b>Size:</b> ${formatFileSize(getRealAttachmentSize(att))}</span>
+          </div>`;
+      } else {
+        bodyEl.innerHTML = `<div style="padding:24px;text-align:center;color:#475467;">Loading uploaded photo preview…</div>`;
+      }
+
+      await ensureAttachmentHydrated(att);
+      if (activePreviewAttachment !== att) return;
+
+      const finalImgSrc =
+        normalizeAttachmentDataUrl(cloudBlobComplete[att.id] || att.dataUrl, filename, att.fileType) ||
+        att.remoteUrl ||
+        initialUrl;
+
+      if (finalImgSrc) {
+        bodyEl.innerHTML = `
+          <div style="text-align:center;background:#0f172a;padding:12px;border-radius:12px;">
+            <img id="preview-live-img" src="${escapeHtml(finalImgSrc)}" alt="${escapeHtml(filename)}" style="max-width:100%;max-height:55vh;border-radius:8px;object-fit:contain;display:block;margin:0 auto;">
+          </div>
+          <div style="margin-top:10px;font-size:12px;color:#475467;display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;">
+            <span><b>File:</b> ${escapeHtml(filename)}</span>
+            <span><b>Size:</b> ${formatFileSize(getRealAttachmentSize(att))}</span>
+          </div>`;
+        const imgEl = document.getElementById('preview-live-img');
+        if (imgEl && att.remoteUrl && finalImgSrc !== att.remoteUrl) {
+          imgEl.onerror = () => {
+            imgEl.onerror = null;
+            imgEl.src = att.remoteUrl;
+          };
+        }
+      } else {
+        bodyEl.innerHTML = `
+          <div style="padding:24px;text-align:center;background:#f8fafc;border-radius:12px;border:1px solid #e2e8f0;color:#334155;">
+            <b>${escapeHtml(filename)}</b> (${formatFileSize(getRealAttachmentSize(att))})<br>
+            <span style="font-size:12px;color:#64748b;">Image is syncing from publisher device. Tap Refresh and try again.</span>
+          </div>`;
+      }
+      return;
+    }
+
+    bodyEl.innerHTML = `<div style="padding:18px;text-align:center;color:#475467;">Loading attachment preview…</div>`;
+    await ensureAttachmentHydrated(att);
+    if (activePreviewAttachment !== att) return;
+
     const blob = buildDownloadBlob(att);
     activePreviewBlobUrl = URL.createObjectURL(blob);
 
-    if (isImage) {
-      const imgSrc =
-        att.dataUrl && att.dataUrl.startsWith('data:image/')
-          ? att.dataUrl
-          : createSamplePosterDataUrl(filename, att.previewText);
-      bodyEl.innerHTML = `
-        <div style="text-align:center;background:#0f172a;padding:12px;border-radius:12px;">
-          <img src="${imgSrc}" alt="${escapeHtml(filename)}" style="max-width:100%;max-height:52vh;border-radius:8px;object-fit:contain;">
-        </div>
-        <div style="margin-top:10px;font-size:12px;color:#475467;display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;">
-          <span><b>File:</b> ${escapeHtml(filename)}</span>
-          <span><b>Size:</b> ${(Number(att.size || 102400) / 1024).toFixed(1)} KB</span>
-        </div>`;
-    } else if (isPdf) {
+    if (isPdf) {
       bodyEl.innerHTML = `
         <iframe src="${activePreviewBlobUrl}" style="width:100%;height:340px;border:1px solid #cbd5e1;border-radius:10px;background:#fff;" title="${escapeHtml(filename)}"></iframe>
         <div style="margin-top:10px;background:#f8fafc;color:#1e293b;padding:12px;border-radius:10px;border:1px solid #e2e8f0;white-space:pre-line;font-family:monospace;font-size:12px;">
-          <b>PDF Document Summary (${escapeHtml(filename)}):</b>\n${escapeHtml(att.previewText || 'Official GCE Salem PDF Circular')}
+          <b>PDF Document Summary (${escapeHtml(filename)} · ${formatFileSize(blob.size)}):</b>\n${escapeHtml(att.previewText || 'Official GCE Salem PDF Circular')}
         </div>`;
     } else {
       let textPreview = att.previewText || 'Official GCE Salem Circular Attachment';
@@ -1453,7 +1766,7 @@
       }
       bodyEl.innerHTML = `
         <div style="background:#f8fafc;color:#1e293b;padding:14px;border-radius:10px;border:1px solid #e2e8f0;white-space:pre-line;font-family:monospace;font-size:12px;">
-          <b>Document Preview (${escapeHtml(filename)}):</b>\n\n${escapeHtml(textPreview)}
+          <b>Document Preview (${escapeHtml(filename)} · ${formatFileSize(blob.size)}):</b>\n\n${escapeHtml(textPreview)}
         </div>`;
     }
   }
