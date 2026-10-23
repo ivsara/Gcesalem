@@ -101,73 +101,517 @@
     return 'data:text/plain;charset=utf-8,' + encodeURIComponent(content);
   }
 
-  function createValidPdfBytes(title, bodyText) {
-    const clean = str => String(str || '').replace(/[()\\]/g, '').replace(/[^\x20-\x7E]/g, ' ');
-    const lines = [
-      'GOVERNMENT COLLEGE OF ENGINEERING, SALEM - 636011',
-      'OFFICIAL DIGITAL NOTICE BOARD ATTACHMENT',
-      '------------------------------------------------------------',
-      `Document: ${clean(title)}`,
-      `Generated: ${new Date().toLocaleString()}`,
-      '------------------------------------------------------------',
-      ...String(bodyText || 'Official College Circular').split(/\r?\n/).map(clean)
-    ];
-    let y = 760;
-    const ops = ['BT', '/F1 11 Tf'];
-    lines.slice(0, 38).forEach(line => {
-      ops.push(`1 0 0 1 50 ${y} Tm (${line.slice(0, 85)}) Tj`);
-      y -= 18;
+  function wrapTextLinesJs(text, maxChars = 72) {
+    const out = [];
+    const lines = String(text || '').replace(/\r\n/g, '\n').split('\n');
+    for (const raw of lines) {
+      const trimmed = raw.trimEnd();
+      if (!trimmed) {
+        out.push('');
+        continue;
+      }
+      let cur = '';
+      for (const word of trimmed.split(/\s+/)) {
+        if (!cur) {
+          if (word.length > maxChars) {
+            for (let i = 0; i < word.length; i += maxChars) {
+              out.push(word.slice(i, i + maxChars));
+            }
+          } else {
+            cur = word;
+          }
+        } else if (cur.length + 1 + word.length <= maxChars) {
+          cur += ' ' + word;
+        } else {
+          out.push(cur);
+          cur = word.length > maxChars ? word.slice(0, maxChars) : word;
+        }
+      }
+      if (cur) out.push(cur);
+    }
+    return out;
+  }
+
+  function generateFallbackImageDataUrl(att) {
+    const filename = String((att && att.filename) || 'GCE_Salem_Notice_Image.png');
+    const preview = String(
+      (att && att.previewText) ||
+        'Official Visual Notice Attachment issued by Government College of Engineering, Salem (Autonomous).'
+    );
+    const canvas = document.createElement('canvas');
+    canvas.width = 1080;
+    canvas.height = 760;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return '';
+
+    // Background
+    ctx.fillStyle = '#f8fafc';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Card frame
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(32, 32, canvas.width - 64, canvas.height - 64);
+    ctx.strokeStyle = '#cbd5e1';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(32, 32, canvas.width - 64, canvas.height - 64);
+
+    // Navy Header Banner
+    ctx.fillStyle = '#0b3c5d';
+    ctx.fillRect(32, 32, canvas.width - 64, 144);
+
+    // Gold Accent Bar
+    ctx.fillStyle = '#d97706';
+    ctx.fillRect(32, 176, canvas.width - 64, 12);
+
+    // Header Text
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 29px system-ui, -apple-system, sans-serif';
+    ctx.fillText('GOVERNMENT COLLEGE OF ENGINEERING, SALEM', 68, 96);
+
+    ctx.fillStyle = '#e2e8f0';
+    ctx.font = '20px system-ui, -apple-system, sans-serif';
+    ctx.fillText('Autonomous Institution Affiliated to Anna University • Digital Notice Board', 68, 138);
+
+    // Attachment Title Box
+    ctx.fillStyle = '#eff6ff';
+    ctx.fillRect(64, 218, canvas.width - 128, 92);
+    ctx.fillStyle = '#1e3a8a';
+    ctx.font = 'bold 23px system-ui, -apple-system, sans-serif';
+    ctx.fillText('Attachment: ' + filename.slice(0, 54), 84, 258);
+
+    ctx.fillStyle = '#475569';
+    ctx.font = '18px system-ui, -apple-system, sans-serif';
+    ctx.fillText('Verified Official GCE Salem Notice Attachment', 84, 292);
+
+    // Wrapped Body Lines
+    const wrapped = wrapTextLinesJs(preview, 64);
+    ctx.fillStyle = '#1e293b';
+    ctx.font = '21px system-ui, -apple-system, sans-serif';
+    let y = 365;
+    wrapped.slice(0, 9).forEach(line => {
+      ctx.fillText(line, 72, y);
+      y += 36;
     });
+
+    // Footer Seal
+    ctx.fillStyle = '#0b3c5d';
+    ctx.font = 'bold 18px system-ui, -apple-system, sans-serif';
+    ctx.fillText('OFFICIAL DIGITAL NOTICE BOARD — GCE SALEM (636 011)', 72, canvas.height - 64);
+
+    const ext = filename.split('.').pop().toLowerCase();
+    const outMime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : 'image/png';
+    return canvas.toDataURL(outMime, 0.94);
+  }
+
+  function renderDocumentPreviewCanvasDataUrl(filename, bodyText) {
+    const canvas = document.createElement('canvas');
+    canvas.width = 794; // A4 ratio width
+    canvas.height = 1040;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return '';
+
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.strokeStyle = '#cbd5e1';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(20, 20, canvas.width - 40, canvas.height - 40);
+
+    // Header Banner
+    ctx.fillStyle = '#0b3c5d';
+    ctx.fillRect(40, 40, canvas.width - 80, 92);
+    ctx.fillStyle = '#d97706';
+    ctx.fillRect(40, 132, canvas.width - 80, 6);
+
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 20px system-ui, -apple-system, sans-serif';
+    ctx.fillText('GOVERNMENT COLLEGE OF ENGINEERING, SALEM - 636 011', 60, 78);
+    ctx.fillStyle = '#e2e8f0';
+    ctx.font = '14px system-ui, -apple-system, sans-serif';
+    ctx.fillText('Autonomous Institution Affiliated to Anna University | Official Circular Document', 60, 108);
+
+    // Metadata Bar
+    ctx.fillStyle = '#0f172a';
+    ctx.font = 'bold 16px system-ui, -apple-system, sans-serif';
+    ctx.fillText('Document: ' + String(filename || 'Circular.pdf').slice(0, 60), 52, 174);
+
+    ctx.strokeStyle = '#94a3b8';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(52, 190);
+    ctx.lineTo(canvas.width - 52, 190);
+    ctx.stroke();
+
+    // Body Lines
+    const lines = wrapTextLinesJs(bodyText || 'Official GCE Salem Circular Document', 72);
+    ctx.fillStyle = '#1e293b';
+    ctx.font = '15px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+    let y = 224;
+    lines.slice(0, 31).forEach(line => {
+      ctx.fillText(line, 52, y);
+      y += 24;
+    });
+
+    // Footer
+    ctx.strokeStyle = '#cbd5e1';
+    ctx.beginPath();
+    ctx.moveTo(52, canvas.height - 84);
+    ctx.lineTo(canvas.width - 52, canvas.height - 84);
+    ctx.stroke();
+
+    ctx.fillStyle = '#475569';
+    ctx.font = 'bold 13px system-ui, -apple-system, sans-serif';
+    ctx.fillText('Authorized Signatory: Office of the Principal / Head of Department, GCE Salem', 52, canvas.height - 54);
+
+    return canvas.toDataURL('image/png');
+  }
+
+  function createValidPdfBytes(title, bodyText) {
+    const cleanPdf = str =>
+      String(str || '')
+        .replace(/\\/g, '\\\\')
+        .replace(/\(/g, '\\(')
+        .replace(/\)/g, '\\)')
+        .replace(/[^\x20-\x7E]/g, ' ');
+
+    const bodyLines = wrapTextLinesJs(
+      bodyText || 'Government College of Engineering, Salem - 636 011 (Autonomous)\nOfficial Circular Document.',
+      74
+    );
+
+    const ops = [
+      '0.043 0.235 0.365 rg',
+      '40 748 515 58 re f',
+      '0.851 0.467 0.024 rg',
+      '40 743 515 5 re f',
+      'BT',
+      '1 1 1 rg',
+      '/F1 13 Tf',
+      '1 0 0 1 54 782 Tm (GOVERNMENT COLLEGE OF ENGINEERING, SALEM - 636 011) Tj',
+      '/F1 9 Tf',
+      '1 0 0 1 54 762 Tm (Autonomous Institution Affiliated to Anna University | Official Digital Notice Circular) Tj',
+      'ET',
+      'BT',
+      '0.08 0.12 0.20 rg',
+      '/F1 11 Tf',
+      `1 0 0 1 48 716 Tm (Document: ${cleanPdf(title)}) Tj`,
+      '1 0 0 1 48 700 Tm (--------------------------------------------------------------------------------) Tj',
+      '/F1 10 Tf'
+    ];
+
+    let y = 678;
+    bodyLines.slice(0, 33).forEach(line => {
+      ops.push(`1 0 0 1 48 ${y} Tm (${cleanPdf(line)}) Tj`);
+      y -= 17;
+    });
+    ops.push('0.30 0.35 0.42 rg');
+    ops.push('/F1 9 Tf');
+    ops.push('1 0 0 1 48 52 Tm (Authorized Signatory: Office of the Principal / Head of Department, GCE Salem) Tj');
     ops.push('ET');
+
     const stream = ops.join('\n');
-    const pdf =
-      '%PDF-1.4\n' +
-      '1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n' +
-      '2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n' +
-      '3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj\n' +
-      `4 0 obj << /Length ${stream.length} >> stream\n${stream}\nendstream endobj\n` +
-      '5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n' +
-      'trailer << /Root 1 0 R >>\n%%EOF';
-    return new TextEncoder().encode(pdf);
+    const chunks = [];
+    let offset = 0;
+    const addStr = s => {
+      chunks.push(s);
+      offset += s.length;
+    };
+
+    addStr('%PDF-1.4\n');
+    const objOffsets = [0];
+
+    objOffsets[1] = offset;
+    addStr('1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n');
+
+    objOffsets[2] = offset;
+    addStr('2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n');
+
+    objOffsets[3] = offset;
+    addStr('3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n');
+
+    objOffsets[4] = offset;
+    addStr(`4 0 obj\n<< /Length ${stream.length} >>\nstream\n${stream}\nendstream\nendobj\n`);
+
+    objOffsets[5] = offset;
+    addStr('5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n');
+
+    const xrefOffset = offset;
+    addStr('xref\n0 6\n');
+    addStr('0000000000 65535 f \n');
+    for (let i = 1; i <= 5; i++) {
+      addStr(String(objOffsets[i]).padStart(10, '0') + ' 00000 n \n');
+    }
+    addStr(`trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`);
+
+    const fullStr = chunks.join('');
+    const bytes = new Uint8Array(fullStr.length);
+    for (let i = 0; i < fullStr.length; i++) {
+      bytes[i] = fullStr.charCodeAt(i) & 0xff;
+    }
+    return bytes;
+  }
+
+  function crc32Bytes(u8) {
+    let c = 0xffffffff;
+    for (let i = 0; i < u8.length; i++) {
+      c ^= u8[i];
+      for (let k = 0; k < 8; k++) {
+        c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      }
+    }
+    return (c ^ 0xffffffff) >>> 0;
+  }
+
+  function buildStoreZip(entries) {
+    const enc = new TextEncoder();
+    const fileRecords = entries.map(e => {
+      const nameBytes = enc.encode(e.name);
+      const dataBytes = typeof e.content === 'string' ? enc.encode(e.content) : e.content;
+      const crc = crc32Bytes(dataBytes);
+      return { nameBytes, dataBytes, crc };
+    });
+
+    let localSize = 0;
+    let centralSize = 0;
+    fileRecords.forEach(r => {
+      localSize += 30 + r.nameBytes.length + r.dataBytes.length;
+      centralSize += 46 + r.nameBytes.length;
+    });
+
+    const out = new Uint8Array(localSize + centralSize + 22);
+    const view = new DataView(out.buffer);
+    let pos = 0;
+
+    fileRecords.forEach(r => {
+      r.offset = pos;
+      view.setUint32(pos, 0x04034b50, true);
+      view.setUint16(pos + 4, 20, true);
+      view.setUint16(pos + 6, 0, true);
+      view.setUint16(pos + 8, 0, true);
+      view.setUint16(pos + 10, 0, true);
+      view.setUint16(pos + 12, 0, true);
+      view.setUint32(pos + 14, r.crc, true);
+      view.setUint32(pos + 18, r.dataBytes.length, true);
+      view.setUint32(pos + 22, r.dataBytes.length, true);
+      view.setUint16(pos + 26, r.nameBytes.length, true);
+      view.setUint16(pos + 28, 0, true);
+      out.set(r.nameBytes, pos + 30);
+      out.set(r.dataBytes, pos + 30 + r.nameBytes.length);
+      pos += 30 + r.nameBytes.length + r.dataBytes.length;
+    });
+
+    const centralStart = pos;
+    fileRecords.forEach(r => {
+      view.setUint32(pos, 0x02014b50, true);
+      view.setUint16(pos + 4, 20, true);
+      view.setUint16(pos + 6, 20, true);
+      view.setUint16(pos + 8, 0, true);
+      view.setUint16(pos + 10, 0, true);
+      view.setUint16(pos + 12, 0, true);
+      view.setUint16(pos + 14, 0, true);
+      view.setUint32(pos + 16, r.crc, true);
+      view.setUint32(pos + 20, r.dataBytes.length, true);
+      view.setUint32(pos + 24, r.dataBytes.length, true);
+      view.setUint16(pos + 28, r.nameBytes.length, true);
+      view.setUint16(pos + 30, 0, true);
+      view.setUint16(pos + 32, 0, true);
+      view.setUint16(pos + 34, 0, true);
+      view.setUint16(pos + 36, 0, true);
+      view.setUint32(pos + 38, 0, true);
+      view.setUint32(pos + 42, r.offset, true);
+      out.set(r.nameBytes, pos + 46);
+      pos += 46 + r.nameBytes.length;
+    });
+
+    view.setUint32(pos, 0x06054b50, true);
+    view.setUint16(pos + 4, 0, true);
+    view.setUint16(pos + 6, 0, true);
+    view.setUint16(pos + 8, fileRecords.length, true);
+    view.setUint16(pos + 10, fileRecords.length, true);
+    view.setUint32(pos + 12, centralSize, true);
+    view.setUint32(pos + 16, centralStart, true);
+    view.setUint16(pos + 20, 0, true);
+    return out;
+  }
+
+  function escapeXmlJs(str) {
+    return String(str || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&apos;');
+  }
+
+  function createValidDocxBytes(title, bodyText) {
+    const lines = [
+      'GOVERNMENT COLLEGE OF ENGINEERING, SALEM - 636 011',
+      'Autonomous Institution Affiliated to Anna University',
+      `Official Circular Document: ${title}`,
+      ''
+    ].concat(String(bodyText || 'Official GCE Salem Circular').split(/\r?\n/));
+
+    const pXml = lines
+      .map(l => `<w:p><w:r><w:t xml:space="preserve">${escapeXmlJs(l)}</w:t></w:r></w:p>`)
+      .join('');
+
+    return buildStoreZip([
+      {
+        name: '[Content_Types].xml',
+        content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>`
+      },
+      {
+        name: '_rels/.rels',
+        content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`
+      },
+      {
+        name: 'word/document.xml',
+        content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${pXml}</w:body></w:document>`
+      }
+    ]);
+  }
+
+  function createValidXlsxBytes(title, bodyText) {
+    const rows = [
+      ['GOVERNMENT COLLEGE OF ENGINEERING, SALEM - 636 011'],
+      ['Document', String(title || 'Spreadsheet.xlsx')],
+      []
+    ];
+    String(bodyText || 'Sheet1: Official GCE Salem Data')
+      .split(/\r?\n/)
+      .forEach(line => {
+        if (line.includes(',')) rows.push(line.split(',').map(s => s.trim()));
+        else if (line.includes(':')) rows.push(line.split(':', 2).map(s => s.trim()));
+        else rows.push([line.trim()]);
+      });
+
+    const rowsXml = rows
+      .map((cols, rIdx) => {
+        const rNum = rIdx + 1;
+        const cells = cols
+          .map((val, cIdx) => {
+            const colLetter = String.fromCharCode(65 + Math.min(25, cIdx));
+            return `<c r="${colLetter}${rNum}" t="inlineStr"><is><t>${escapeXmlJs(val)}</t></is></c>`;
+          })
+          .join('');
+        return `<row r="${rNum}">${cells}</row>`;
+      })
+      .join('');
+
+    return buildStoreZip([
+      {
+        name: '[Content_Types].xml',
+        content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>`
+      },
+      {
+        name: '_rels/.rels',
+        content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`
+      },
+      {
+        name: 'xl/workbook.xml',
+        content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="GCE_Salem" sheetId="1" r:id="rId1"/></sheets></workbook>`
+      },
+      {
+        name: 'xl/_rels/workbook.xml.rels',
+        content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>`
+      },
+      {
+        name: 'xl/worksheets/sheet1.xml',
+        content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${rowsXml}</sheetData></worksheet>`
+      }
+    ]);
+  }
+
+  function decodeBase64DataUrlToBlob(dataUrl, fallbackMime) {
+    try {
+      const parts = String(dataUrl || '').split(';base64,');
+      if (parts.length < 2) return null;
+      const mime = (parts[0].startsWith('data:') ? parts[0].slice(5) : '') || fallbackMime || 'application/octet-stream';
+      const binary = window.atob(parts[1]);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      return new Blob([bytes], { type: mime });
+    } catch (_) {
+      return null;
+    }
   }
 
   function buildDownloadBlob(att) {
     const filename = String((att && att.filename) || 'GCE_Salem_Circular.pdf');
     const ext = filename.split('.').pop().toLowerCase();
-    const rawDataUrl = String((att && (cloudBlobComplete[att.id] || att.dataUrl)) || '');
+    const isImg = isImageFilenameOrType(filename, att && att.fileType);
+    const rawDataUrl = String((att && (cloudBlobComplete[att.id] || att.dataUrl || att.inlineDataUrl)) || '');
     const dataUrl = normalizeAttachmentDataUrl(rawDataUrl, filename, att && att.fileType);
 
-    // If a real uploaded file (base64 data URL) is stored, decode exact binary bytes
+    // 1. Image Attachments: Guarantee a valid binary PNG/JPEG image Blob
+    if (isImg) {
+      if (dataUrl.startsWith('data:image/') && dataUrl.includes(';base64,')) {
+        const imgBlob = decodeBase64DataUrlToBlob(dataUrl, ext === 'png' ? 'image/png' : 'image/jpeg');
+        if (imgBlob && imgBlob.size > 0) return imgBlob;
+      }
+      const generatedImgUrl = generateFallbackImageDataUrl(att);
+      if (att && generatedImgUrl) {
+        att.dataUrl = generatedImgUrl;
+      }
+      const fallbackBlob = decodeBase64DataUrlToBlob(generatedImgUrl, ext === 'png' ? 'image/png' : 'image/jpeg');
+      if (fallbackBlob) return fallbackBlob;
+    }
+
+    // 2. Real uploaded binary file in base64 data URL
     if (dataUrl.startsWith('data:') && dataUrl.includes(';base64,')) {
+      const blob = decodeBase64DataUrlToBlob(dataUrl, 'application/octet-stream');
+      if (blob && blob.size > 0) return blob;
+    }
+
+    let preview = String((att && att.previewText) || `Official GCE Salem Attachment: ${filename}`);
+    if (rawDataUrl.startsWith('data:text/plain;charset=utf-8,')) {
       try {
-        const parts = dataUrl.split(';base64,');
-        const mime = parts[0].slice(5) || 'application/octet-stream';
-        const binary = window.atob(parts[1]);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) {
-          bytes[i] = binary.charCodeAt(i);
-        }
-        return new Blob([bytes], { type: mime });
+        preview = decodeURIComponent(rawDataUrl.slice('data:text/plain;charset=utf-8,'.length));
       } catch (_) {}
     }
 
-    const preview = String((att && att.previewText) || `Official GCE Salem Attachment: ${filename}`);
-    if (ext === 'pdf') {
+    // 3. PDF Attachments: Guarantee valid PDF with xref table
+    if (ext === 'pdf' || (att && att.fileType === 'PDF')) {
       return new Blob([createValidPdfBytes(filename, preview)], { type: 'application/pdf' });
     }
-    if (ext === 'xls' || ext === 'xlsx' || ext === 'csv') {
+
+    // 4. Word (.docx) -> Valid OpenXML ZIP archive
+    if (ext === 'docx') {
+      return new Blob([createValidDocxBytes(filename, preview)], {
+        type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+      });
+    }
+
+    // 5. Word (.doc) -> Valid RTF document
+    if (ext === 'doc' || (att && att.fileType === 'DOC')) {
+      const rtfLines = [
+        'GOVERNMENT COLLEGE OF ENGINEERING, SALEM - 636 011',
+        `Document: ${filename}`,
+        '------------------------------------------------------------',
+        ...preview.split(/\r?\n/)
+      ]
+        .map(l => l.replace(/\\/g, '\\\\').replace(/\{/g, '\\{').replace(/\}/g, '\\}'))
+        .join('\\par\n');
+      const rtf = `{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0 Arial;}}\\f0\\fs22 ${rtfLines}}`;
+      return new Blob([rtf], { type: 'application/msword' });
+    }
+
+    // 6. Excel (.xlsx) -> Valid OpenXML Spreadsheet ZIP archive
+    if (ext === 'xlsx') {
+      return new Blob([createValidXlsxBytes(filename, preview)], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      });
+    }
+
+    // 7. CSV / XLS
+    if (ext === 'xls' || ext === 'csv' || (att && att.fileType === 'XLS')) {
       const csvContent = preview.includes(',')
         ? preview
-        : `Document,Department,Details\n"${filename.replace(/"/g, '""')}","GCE Salem","${preview.replace(/\r?\n/g, ' ').replace(/"/g, '""')}"`;
+        : `Document,Institution,Details\n"${filename.replace(/"/g, '""')}","GCE Salem","${preview.replace(/\r?\n/g, ' | ').replace(/"/g, '""')}"`;
       return new Blob([csvContent], { type: 'text/csv;charset=utf-8' });
     }
-    if (rawDataUrl.startsWith('data:text/plain;charset=utf-8,')) {
-      const decoded = decodeURIComponent(rawDataUrl.slice('data:text/plain;charset=utf-8,'.length));
-      if (ext === 'pdf') {
-        return new Blob([createValidPdfBytes(filename, decoded)], { type: 'application/pdf' });
-      }
-      return new Blob([decoded], { type: 'text/plain;charset=utf-8' });
-    }
+
     return new Blob([preview], { type: 'text/plain;charset=utf-8' });
   }
 
@@ -1677,92 +2121,126 @@
     const filename = String(att.filename || 'Circular.pdf');
     const ext = filename.split('.').pop().toLowerCase();
     const isImage = isImageFilenameOrType(filename, att.fileType);
-    const isPdf =
-      att.fileType === 'PDF' ||
-      ext === 'pdf' ||
-      (att.dataUrl && att.dataUrl.startsWith('data:application/pdf'));
+    const isSpreadsheet =
+      ['xlsx', 'xls', 'csv'].includes(ext) || att.fileType === 'XLS';
 
     document.getElementById('preview-title').textContent = filename;
     const bodyEl = document.getElementById('preview-body');
     previewModal.classList.add('open');
 
-    // If image already has an inline or full dataUrl/remoteUrl, render it immediately while upgrading to full quality
     if (isImage) {
-      const initialUrl = normalizeAttachmentDataUrl(att.dataUrl, filename, att.fileType) || att.remoteUrl || '';
-      if (initialUrl) {
+      const renderImagePreviewHtml = imgSrc => {
+        const fallbackPoster = generateFallbackImageDataUrl(att);
+        const srcToUse = imgSrc || fallbackPoster;
         bodyEl.innerHTML = `
-          <div style="text-align:center;background:#0f172a;padding:12px;border-radius:12px;">
-            <img id="preview-live-img" src="${escapeHtml(initialUrl)}" alt="${escapeHtml(filename)}" style="max-width:100%;max-height:55vh;border-radius:8px;object-fit:contain;display:block;margin:0 auto;">
+          <div style="text-align:center;background:#0f172a;padding:12px;border-radius:12px;overflow:auto;">
+            <img id="preview-live-img" src="${escapeHtml(srcToUse)}" alt="${escapeHtml(filename)}" style="max-width:100%;max-height:58vh;border-radius:8px;object-fit:contain;display:block;margin:0 auto;transition:transform 0.15s ease;">
           </div>
-          <div style="margin-top:10px;font-size:12px;color:#475467;display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;">
-            <span><b>File:</b> ${escapeHtml(filename)}</span>
-            <span><b>Size:</b> ${formatFileSize(getRealAttachmentSize(att))}</span>
+          <div style="margin-top:10px;font-size:12px;color:#475467;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;">
+            <span><b>File:</b> ${escapeHtml(filename)} · <b>Size:</b> ${formatFileSize(getRealAttachmentSize(att))}</span>
+            <span style="display:inline-flex;gap:4px;">
+              <button type="button" data-img-zoom="1" style="border:1px solid #cbd5e1;background:#fff;border-radius:5px;padding:2px 7px;font-size:11px;cursor:pointer;">1x</button>
+              <button type="button" data-img-zoom="1.5" style="border:1px solid #cbd5e1;background:#fff;border-radius:5px;padding:2px 7px;font-size:11px;cursor:pointer;">1.5x</button>
+              <button type="button" data-img-zoom="2" style="border:1px solid #cbd5e1;background:#fff;border-radius:5px;padding:2px 7px;font-size:11px;cursor:pointer;">2x</button>
+            </span>
           </div>`;
-      } else {
-        bodyEl.innerHTML = `<div style="padding:24px;text-align:center;color:#475467;">Loading uploaded photo preview…</div>`;
-      }
+        const imgEl = document.getElementById('preview-live-img');
+        if (imgEl) {
+          imgEl.onerror = () => {
+            imgEl.onerror = null;
+            if (att.remoteUrl && imgEl.src !== att.remoteUrl) {
+              imgEl.src = att.remoteUrl;
+              imgEl.onerror = () => {
+                imgEl.onerror = null;
+                imgEl.src = fallbackPoster;
+              };
+            } else {
+              imgEl.src = fallbackPoster;
+            }
+          };
+        }
+        bodyEl.querySelectorAll('[data-img-zoom]').forEach(btn => {
+          btn.addEventListener('click', () => {
+            const z = Number(btn.getAttribute('data-img-zoom') || 1);
+            if (imgEl) imgEl.style.transform = `scale(${z})`;
+          });
+        });
+      };
+
+      const initialUrl =
+        normalizeAttachmentDataUrl(cloudBlobComplete[att.id] || att.dataUrl || att.inlineDataUrl, filename, att.fileType) ||
+        att.remoteUrl ||
+        generateFallbackImageDataUrl(att);
+      renderImagePreviewHtml(initialUrl);
 
       await ensureAttachmentHydrated(att);
       if (activePreviewAttachment !== att) return;
 
       const finalImgSrc =
-        normalizeAttachmentDataUrl(cloudBlobComplete[att.id] || att.dataUrl, filename, att.fileType) ||
+        normalizeAttachmentDataUrl(cloudBlobComplete[att.id] || att.dataUrl || att.inlineDataUrl, filename, att.fileType) ||
         att.remoteUrl ||
         initialUrl;
-
-      if (finalImgSrc) {
-        bodyEl.innerHTML = `
-          <div style="text-align:center;background:#0f172a;padding:12px;border-radius:12px;">
-            <img id="preview-live-img" src="${escapeHtml(finalImgSrc)}" alt="${escapeHtml(filename)}" style="max-width:100%;max-height:55vh;border-radius:8px;object-fit:contain;display:block;margin:0 auto;">
-          </div>
-          <div style="margin-top:10px;font-size:12px;color:#475467;display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;">
-            <span><b>File:</b> ${escapeHtml(filename)}</span>
-            <span><b>Size:</b> ${formatFileSize(getRealAttachmentSize(att))}</span>
-          </div>`;
-        const imgEl = document.getElementById('preview-live-img');
-        if (imgEl && att.remoteUrl && finalImgSrc !== att.remoteUrl) {
-          imgEl.onerror = () => {
-            imgEl.onerror = null;
-            imgEl.src = att.remoteUrl;
-          };
-        }
-      } else {
-        bodyEl.innerHTML = `
-          <div style="padding:24px;text-align:center;background:#f8fafc;border-radius:12px;border:1px solid #e2e8f0;color:#334155;">
-            <b>${escapeHtml(filename)}</b> (${formatFileSize(getRealAttachmentSize(att))})<br>
-            <span style="font-size:12px;color:#64748b;">Image is syncing from publisher device. Tap Refresh and try again.</span>
-          </div>`;
-      }
+      renderImagePreviewHtml(finalImgSrc);
       return;
     }
 
-    bodyEl.innerHTML = `<div style="padding:18px;text-align:center;color:#475467;">Loading attachment preview…</div>`;
+    bodyEl.innerHTML = `<div style="padding:18px;text-align:center;color:#475467;">Loading document preview…</div>`;
     await ensureAttachmentHydrated(att);
     if (activePreviewAttachment !== att) return;
 
     const blob = buildDownloadBlob(att);
     activePreviewBlobUrl = URL.createObjectURL(blob);
 
-    if (isPdf) {
+    let textPreview = att.previewText || 'Official GCE Salem Circular Attachment';
+    if (att.dataUrl && att.dataUrl.startsWith('data:text/')) {
+      try {
+        if (att.dataUrl.includes(';base64,')) {
+          textPreview = window.atob(att.dataUrl.split(';base64,')[1]);
+        } else if (att.dataUrl.includes(',')) {
+          textPreview = decodeURIComponent(att.dataUrl.split(',')[1]);
+        }
+      } catch (_) {}
+    }
+
+    const docPageImgUrl = renderDocumentPreviewCanvasDataUrl(filename, textPreview);
+
+    if (isSpreadsheet) {
+      const rowsHtml = textPreview
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .map((line, idx) => {
+          const cols = line.includes(',')
+            ? line.split(',')
+            : line.includes('|')
+            ? line.split('|')
+            : line.includes(':')
+            ? line.split(':', 2)
+            : [line];
+          const cellsHtml = cols
+            .map(
+              c =>
+                `<td style="padding:6px 10px;border:1px solid #cbd5e1;font-size:12px;">${escapeHtml(c.trim())}</td>`
+            )
+            .join('');
+          return `<tr style="background:${idx === 0 ? '#eff6ff;font-weight:700' : idx % 2 === 0 ? '#f8fafc' : '#ffffff'};"><td style="padding:6px 8px;border:1px solid #cbd5e1;font-weight:700;color:#1d4ed8;font-size:11px;width:28px;text-align:center;">${idx + 1}</td>${cellsHtml}</tr>`;
+        })
+        .join('');
+
       bodyEl.innerHTML = `
-        <iframe src="${activePreviewBlobUrl}" style="width:100%;height:340px;border:1px solid #cbd5e1;border-radius:10px;background:#fff;" title="${escapeHtml(filename)}"></iframe>
-        <div style="margin-top:10px;background:#f8fafc;color:#1e293b;padding:12px;border-radius:10px;border:1px solid #e2e8f0;white-space:pre-line;font-family:monospace;font-size:12px;">
-          <b>PDF Document Summary (${escapeHtml(filename)} · ${formatFileSize(blob.size)}):</b>\n${escapeHtml(att.previewText || 'Official GCE Salem PDF Circular')}
+        <div style="text-align:center;background:#e2e8f0;padding:10px;border-radius:10px;border:1px solid #cbd5e1;">
+          <img src="${escapeHtml(docPageImgUrl)}" alt="${escapeHtml(filename)}" style="max-width:100%;max-height:38vh;border-radius:6px;box-shadow:0 4px 12px rgba(15,23,42,0.12);background:#fff;">
+        </div>
+        <div style="margin-top:10px;overflow-x:auto;background:#ffffff;border-radius:10px;border:1px solid #cbd5e1;padding:10px;">
+          <div style="font-size:12px;font-weight:700;color:#0b3c5d;margin-bottom:6px;">SPREADSHEET PREVIEW (${escapeHtml(filename)} · ${formatFileSize(blob.size)})</div>
+          <table style="width:100%;border-collapse:collapse;">${rowsHtml}</table>
         </div>`;
     } else {
-      let textPreview = att.previewText || 'Official GCE Salem Circular Attachment';
-      if (att.dataUrl && att.dataUrl.startsWith('data:text/')) {
-        try {
-          if (att.dataUrl.includes(';base64,')) {
-            textPreview = window.atob(att.dataUrl.split(';base64,')[1]);
-          } else if (att.dataUrl.includes(',')) {
-            textPreview = decodeURIComponent(att.dataUrl.split(',')[1]);
-          }
-        } catch (_) {}
-      }
       bodyEl.innerHTML = `
-        <div style="background:#f8fafc;color:#1e293b;padding:14px;border-radius:10px;border:1px solid #e2e8f0;white-space:pre-line;font-family:monospace;font-size:12px;">
-          <b>Document Preview (${escapeHtml(filename)} · ${formatFileSize(blob.size)}):</b>\n\n${escapeHtml(textPreview)}
+        <div style="text-align:center;background:#e2e8f0;padding:10px;border-radius:10px;border:1px solid #cbd5e1;">
+          <img src="${escapeHtml(docPageImgUrl)}" alt="${escapeHtml(filename)}" style="max-width:100%;max-height:44vh;border-radius:6px;box-shadow:0 4px 12px rgba(15,23,42,0.12);background:#fff;">
+        </div>
+        <div style="margin-top:10px;background:#f8fafc;color:#1e293b;padding:12px;border-radius:10px;border:1px solid #e2e8f0;white-space:pre-line;font-family:monospace;font-size:12px;">
+          <b>Document Content (${escapeHtml(filename)} · ${formatFileSize(blob.size)}):</b>\n${escapeHtml(textPreview)}
         </div>`;
     }
   }

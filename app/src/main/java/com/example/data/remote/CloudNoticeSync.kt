@@ -1,6 +1,8 @@
 package com.example.data.remote
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.util.Base64
 import com.example.data.model.AttachmentEntity
 import com.example.data.model.NoticeEntity
@@ -15,9 +17,10 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.concurrent.TimeUnit
-import kotlin.math.ceil
+import kotlin.math.max
 
 object CloudNoticeSync {
     private const val SYNC_TOPIC = "gce_salem_notice_board_sync_v4"
@@ -55,24 +58,67 @@ object CloudNoticeSync {
             ext == "png" -> "image/png"
             ext == "jpg" || ext == "jpeg" || fileType == "IMAGE" -> "image/jpeg"
             ext == "webp" -> "image/webp"
-            ext == "csv" || ext == "xls" || ext == "xlsx" -> "text/csv"
+            ext == "docx" -> "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            ext == "doc" -> "application/msword"
+            ext == "xlsx" -> "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            ext == "xls" -> "application/vnd.ms-excel"
+            ext == "csv" -> "text/csv"
             else -> "application/octet-stream"
         }
     }
 
-    private fun uploadAttachmentBinaryAndChunks(att: AttachmentEntity, attId: Long): String {
+    private fun compressImageBytes(rawBytes: ByteArray, maxDim: Int, quality: Int): ByteArray? {
+        return try {
+            val bmp = BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size) ?: return null
+            val w = bmp.width.coerceAtLeast(1)
+            val h = bmp.height.coerceAtLeast(1)
+            val largest = max(w, h)
+            val scaled = if (largest > maxDim) {
+                val ratio = maxDim.toFloat() / largest.toFloat()
+                Bitmap.createScaledBitmap(
+                    bmp,
+                    (w * ratio).toInt().coerceAtLeast(1),
+                    (h * ratio).toInt().coerceAtLeast(1),
+                    true
+                )
+            } else {
+                bmp
+            }
+            val out = ByteArrayOutputStream()
+            scaled.compress(Bitmap.CompressFormat.JPEG, quality, out)
+            out.toByteArray()
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private data class UploadedCloudAttachment(
+        val remoteUrl: String,
+        val inlineDataUrl: String
+    )
+
+    private fun uploadAttachmentBinaryAndChunks(att: AttachmentEntity, attId: Long): UploadedCloudAttachment {
         var remoteUrl = ""
+        var inlineDataUrl = ""
         try {
-            val dir = attachmentsDir ?: return ""
+            val dir = attachmentsDir ?: return UploadedCloudAttachment("", "")
             val localFile = File(dir, att.storedFilename).takeIf { it.exists() }
                 ?: File(dir, att.originalFilename).takeIf { it.exists() }
-                ?: return ""
+                ?: return UploadedCloudAttachment("", "")
 
             val bytes = localFile.readBytes()
-            if (bytes.isEmpty()) return ""
+            if (bytes.isEmpty()) return UploadedCloudAttachment("", "")
 
             val safeName = att.originalFilename.replace(Regex("[^a-zA-Z0-9._-]"), "_").ifBlank { "attachment.bin" }
             val mime = mimeForType(att.originalFilename, att.fileType)
+            val isImage = att.fileType.equals("IMAGE", ignoreCase = true) || mime.startsWith("image/")
+
+            if (isImage) {
+                val thumbBytes = compressImageBytes(bytes, maxDim = 220, quality = 55)
+                if (thumbBytes != null && thumbBytes.size <= 2200) {
+                    inlineDataUrl = "data:image/jpeg;base64," + Base64.encodeToString(thumbBytes, Base64.NO_WRAP)
+                }
+            }
 
             // 1. Direct binary PUT to FILES_URL
             try {
@@ -92,10 +138,20 @@ object CloudNoticeSync {
                 }
             } catch (_: Exception) {}
 
-            // 2. Single-POST FILE_FULL upload to BLOBS_URL for files <= 180 KB so all devices can preview/download rapidly
-            if (bytes.size <= 180 * 1024) {
-                val b64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
-                val dataUrl = "data:$mime;base64,$b64"
+            // 2. Single-POST FILE_FULL upload to BLOBS_URL for files <= 180 KB (or compressed image <= 180 KB)
+            val blobBytes = if (bytes.size <= 180 * 1024) {
+                bytes
+            } else if (isImage) {
+                compressImageBytes(bytes, maxDim = 960, quality = 75)
+            } else {
+                null
+            }
+            val blobMime = if (blobBytes !== bytes && isImage) "image/jpeg" else mime
+
+            if (blobBytes != null && blobBytes.size <= 180 * 1024) {
+                val b64 = Base64.encodeToString(blobBytes, Base64.NO_WRAP)
+                val dataUrl = "data:$blobMime;base64,$b64"
+                cloudBlobComplete[attId] = dataUrl
                 val fullJson = JSONObject().apply {
                     put("action", "FILE_FULL")
                     put("attId", attId)
@@ -110,7 +166,7 @@ object CloudNoticeSync {
                 client.newCall(postReq).execute().close()
             }
         } catch (_: Exception) {}
-        return remoteUrl
+        return UploadedCloudAttachment(remoteUrl, inlineDataUrl)
     }
 
     private fun saveDataUrlToLocalFile(dataUrl: String, targetFilename: String): Boolean {
@@ -221,14 +277,17 @@ object CloudNoticeSync {
             val attArray = JSONArray()
             attachments.forEach { att ->
                 val attId = if (att.id > 0) att.id else System.currentTimeMillis()
-                val remoteUrl = uploadAttachmentBinaryAndChunks(att, attId)
+                val uploaded = uploadAttachmentBinaryAndChunks(att, attId)
                 val attJson = JSONObject().apply {
                     put("id", attId)
                     put("filename", att.originalFilename)
                     put("fileType", att.fileType)
                     put("size", att.fileSizeBytes)
-                    put("remoteUrl", remoteUrl)
+                    put("remoteUrl", uploaded.remoteUrl)
                     put("previewText", att.previewSnippet.take(280))
+                    if (uploaded.inlineDataUrl.isNotBlank()) {
+                        put("dataUrl", uploaded.inlineDataUrl)
+                    }
                 }
                 attArray.put(attJson)
             }
@@ -421,20 +480,20 @@ object CloudNoticeSync {
 
                                 val dir = attachmentsDir
                                 val targetFile = if (dir != null) File(dir, safeStoredName) else null
-                                if (targetFile != null && (!targetFile.exists() || targetFile.length() < 4000L)) {
+                                if (targetFile != null) {
                                     var saved = false
                                     val fullBlob = cloudBlobComplete[attId] ?: ""
                                     if (fullBlob.isNotBlank()) {
                                         saved = saveDataUrlToLocalFile(fullBlob, safeStoredName)
                                     }
-                                    if (!saved && remoteUrl.isNotBlank()) {
+                                    if (!saved && remoteUrl.isNotBlank() && (!targetFile.exists() || targetFile.length() < 3000L)) {
                                         saved = downloadRemoteUrlToLocalFile(remoteUrl, safeStoredName)
                                     }
-                                    if (!saved && inlineDataUrl.isNotBlank() && !targetFile.exists()) {
+                                    if (!saved && inlineDataUrl.isNotBlank() && (!targetFile.exists() || targetFile.length() == 0L)) {
                                         saveDataUrlToLocalFile(inlineDataUrl, safeStoredName)
                                     }
                                 }
-                                if (targetFile != null && targetFile.exists() && targetFile.length() >= 4000L) {
+                                if (size <= 0L && targetFile != null && targetFile.exists() && targetFile.length() > 0L) {
                                     size = targetFile.length()
                                 }
 

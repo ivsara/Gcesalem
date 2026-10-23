@@ -2,6 +2,7 @@ package com.example.ui.screens
 
 import android.content.ContentValues
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.pdf.PdfRenderer
@@ -11,6 +12,7 @@ import android.os.Environment
 import android.os.ParcelFileDescriptor
 import android.provider.MediaStore
 import android.provider.OpenableColumns
+import android.util.Base64
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -20,6 +22,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -125,11 +128,16 @@ import com.example.ui.theme.PriorityMedAmberBg
 import com.example.ui.viewmodel.NoticeBoardViewModel
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.nativeCanvas
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.zip.ZipEntry
+import java.util.zip.ZipInputStream
+import java.util.zip.ZipOutputStream
 import kotlin.random.Random
 
 fun formatTimestamp(ms: Long): String {
@@ -165,53 +173,477 @@ fun formatFileSize(bytes: Long): String {
     }
 }
 
-private fun buildValidPdfBytes(title: String, snippet: String): ByteArray {
-    val cleanTitle = title.replace(Regex("[()\\\\]"), "")
-    val lines = listOf(
-        "GOVERNMENT COLLEGE OF ENGINEERING, SALEM - 636011",
-        "OFFICIAL DIGITAL NOTICE BOARD ATTACHMENT",
-        "------------------------------------------------------------",
-        "File: $cleanTitle",
-        "------------------------------------------------------------"
-    ) + snippet.lines().map { it.replace(Regex("[()\\\\]"), "").take(80) }
+fun isImageAttachment(attachment: AttachmentEntity): Boolean {
+    val ext = attachment.originalFilename.substringAfterLast('.', "").lowercase()
+    return attachment.fileType.equals("IMAGE", ignoreCase = true) ||
+            ext in setOf("png", "jpg", "jpeg", "webp", "gif", "bmp")
+}
 
-    var y = 760
-    val streamBuilder = StringBuilder("BT\n/F1 11 Tf\n")
-    lines.take(35).forEach { line ->
-        streamBuilder.append("1 0 0 1 50 $y Tm ($line) Tj\n")
-        y -= 18
+private fun wrapTextLines(text: String, maxCharsPerLine: Int = 74): List<String> {
+    val result = mutableListOf<String>()
+    for (rawLine in text.replace("\r\n", "\n").lines()) {
+        val trimmed = rawLine.trimEnd()
+        if (trimmed.isEmpty()) {
+            result.add("")
+            continue
+        }
+        var current = StringBuilder()
+        for (word in trimmed.split(Regex("\\s+"))) {
+            if (current.isEmpty()) {
+                if (word.length > maxCharsPerLine) {
+                    word.chunked(maxCharsPerLine).forEach { result.add(it) }
+                } else {
+                    current.append(word)
+                }
+            } else if (current.length + 1 + word.length <= maxCharsPerLine) {
+                current.append(' ').append(word)
+            } else {
+                result.add(current.toString())
+                current = StringBuilder()
+                if (word.length > maxCharsPerLine) {
+                    word.chunked(maxCharsPerLine).forEach { result.add(it) }
+                } else {
+                    current.append(word)
+                }
+            }
+        }
+        if (current.isNotEmpty()) {
+            result.add(current.toString())
+        }
     }
-    streamBuilder.append("ET")
-    val stream = streamBuilder.toString()
+    return result
+}
 
-    val pdf = "%PDF-1.4\n" +
-            "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n" +
-            "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n" +
-            "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj\n" +
-            "4 0 obj << /Length ${stream.length} >> stream\n$stream\nendstream endobj\n" +
-            "5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n" +
-            "trailer << /Root 1 0 R >>\n%%EOF"
-    return pdf.toByteArray(Charsets.UTF_8)
+fun ensureValidImageBitmap(context: Context, attachment: AttachmentEntity): Bitmap {
+    val localDir = File(context.filesDir, "attachments")
+    if (!localDir.exists()) localDir.mkdirs()
+    val storedFile = File(localDir, attachment.storedFilename.ifBlank { "img_${attachment.id}.png" })
+    val origFile = File(localDir, attachment.originalFilename.ifBlank { "img_${attachment.id}.png" })
+
+    for (candidate in listOf(storedFile, origFile)) {
+        if (candidate.exists() && candidate.isFile && candidate.length() > 0L) {
+            val decoded = runCatching { BitmapFactory.decodeFile(candidate.absolutePath) }.getOrNull()
+            if (decoded != null && decoded.width > 0 && decoded.height > 0) {
+                return decoded
+            }
+        }
+    }
+
+    // Check if previewSnippet contains an embedded base64 data URI
+    val snippet = attachment.previewSnippet
+    if (snippet.contains("data:image/") && snippet.contains(";base64,")) {
+        val b64 = snippet.substringAfter(";base64,", "").trim()
+        if (b64.isNotEmpty()) {
+            val decoded = runCatching {
+                val raw = Base64.decode(b64, Base64.DEFAULT)
+                BitmapFactory.decodeByteArray(raw, 0, raw.size)
+            }.getOrNull()
+            if (decoded != null && decoded.width > 0 && decoded.height > 0) {
+                runCatching {
+                    FileOutputStream(storedFile).use { out ->
+                        decoded.compress(Bitmap.CompressFormat.PNG, 100, out)
+                    }
+                }
+                return decoded
+            }
+        }
+    }
+
+    // Render a crisp 1080x760 GCE Salem Official Visual Image Notice Bitmap
+    val width = 1080
+    val height = 760
+    val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+    val canvas = android.graphics.Canvas(bmp)
+    val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+
+    // Page background
+    paint.color = android.graphics.Color.parseColor("#F8FAFC")
+    canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), paint)
+
+    // Outer border card
+    paint.color = android.graphics.Color.WHITE
+    canvas.drawRect(32f, 32f, (width - 32).toFloat(), (height - 32).toFloat(), paint)
+    paint.style = android.graphics.Paint.Style.STROKE
+    paint.strokeWidth = 3f
+    paint.color = android.graphics.Color.parseColor("#CBD5E1")
+    canvas.drawRect(32f, 32f, (width - 32).toFloat(), (height - 32).toFloat(), paint)
+    paint.style = android.graphics.Paint.Style.FILL
+
+    // Navy Header Banner
+    paint.color = android.graphics.Color.parseColor("#0B3C5D")
+    canvas.drawRect(32f, 32f, (width - 32).toFloat(), 176f, paint)
+
+    // Gold Accent Bar
+    paint.color = android.graphics.Color.parseColor("#D97706")
+    canvas.drawRect(32f, 176f, (width - 32).toFloat(), 188f, paint)
+
+    // Header Text
+    paint.color = android.graphics.Color.WHITE
+    paint.textSize = 30f
+    paint.typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+    canvas.drawText("GOVERNMENT COLLEGE OF ENGINEERING, SALEM", 68f, 96f, paint)
+
+    paint.color = android.graphics.Color.parseColor("#E2E8F0")
+    paint.textSize = 20f
+    paint.typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.NORMAL)
+    canvas.drawText("Autonomous Institution Affiliated to Anna University • Digital Notice Board", 68f, 140f, paint)
+
+    // Document Title Box
+    paint.color = android.graphics.Color.parseColor("#EFF6FF")
+    canvas.drawRect(64f, 220f, (width - 64).toFloat(), 310f, paint)
+    paint.color = android.graphics.Color.parseColor("#1E3A8A")
+    paint.textSize = 24f
+    paint.typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+    val cleanFile = attachment.originalFilename.ifBlank { "GCE_Salem_Notice_Image.png" }
+    canvas.drawText("Attachment: ${cleanFile.take(52)}", 84f, 262f, paint)
+
+    paint.color = android.graphics.Color.parseColor("#475569")
+    paint.textSize = 18f
+    paint.typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.NORMAL)
+    canvas.drawText("Published by: ${attachment.uploadedBy.ifBlank { "GCE Salem Office" }}   •   Verified Official Attachment", 84f, 294f, paint)
+
+    // Body Content Lines
+    val bodySource = attachment.previewSnippet.ifBlank {
+        "Official Visual Circular issued by Government College of Engineering, Salem.\nPlease refer to the notice board details for complete schedule and instructions."
+    }
+    val wrapped = wrapTextLines(bodySource, 62)
+    paint.color = android.graphics.Color.parseColor("#1E293B")
+    paint.textSize = 22f
+    var y = 365f
+    wrapped.take(9).forEach { line ->
+        canvas.drawText(line, 72f, y, paint)
+        y += 36f
+    }
+
+    // Footer Seal
+    paint.color = android.graphics.Color.parseColor("#0B3C5D")
+    paint.textSize = 18f
+    paint.typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+    canvas.drawText("OFFICIAL DIGITAL NOTICE BOARD — GCE SALEM (636 011)", 72f, (height - 64).toFloat(), paint)
+
+    // Persist generated bitmap so future previews and downloads read valid image bytes
+    runCatching {
+        val ext = cleanFile.substringAfterLast('.', "png").lowercase()
+        val fmt = if (ext == "jpg" || ext == "jpeg") Bitmap.CompressFormat.JPEG else Bitmap.CompressFormat.PNG
+        FileOutputStream(storedFile).use { out ->
+            bmp.compress(fmt, 95, out)
+        }
+    }
+    return bmp
+}
+
+private fun escapePdfText(input: String): String {
+    val sb = StringBuilder()
+    for (ch in input) {
+        when (ch) {
+            '(' -> sb.append("\\(")
+            ')' -> sb.append("\\)")
+            '\\' -> sb.append("\\\\")
+            in ' '..'~' -> sb.append(ch)
+            else -> sb.append(' ')
+        }
+    }
+    return sb.toString()
+}
+
+fun buildValidPdfBytes(title: String, snippet: String): ByteArray {
+    val cleanTitle = escapePdfText(title.ifBlank { "GCE_Salem_Circular.pdf" })
+    val bodyLines = wrapTextLines(
+        snippet.ifBlank {
+            "Government College of Engineering, Salem - 636011 (Autonomous)\nOfficial Circular Document issued via Digital Notice Board."
+        },
+        maxCharsPerLine = 74
+    )
+
+    val streamBuilder = StringBuilder()
+    // Header Banner Rectangle (Navy Blue #0B3C5D)
+    streamBuilder.append("0.043 0.235 0.365 rg\n")
+    streamBuilder.append("40 748 515 58 re f\n")
+    // Gold Accent Strip (#D97706)
+    streamBuilder.append("0.851 0.467 0.024 rg\n")
+    streamBuilder.append("40 743 515 5 re f\n")
+    // Header Text in White
+    streamBuilder.append("BT\n1 1 1 rg\n/F1 13 Tf\n1 0 0 1 54 782 Tm (GOVERNMENT COLLEGE OF ENGINEERING, SALEM - 636 011) Tj\n")
+    streamBuilder.append("/F1 9 Tf\n1 0 0 1 54 762 Tm (Autonomous Institution Affiliated to Anna University | Official Digital Notice Circular) Tj\nET\n")
+
+    // Document Title & Body in Dark Slate
+    streamBuilder.append("BT\n0.08 0.12 0.20 rg\n/F1 11 Tf\n")
+    streamBuilder.append("1 0 0 1 48 716 Tm (Document: $cleanTitle) Tj\n")
+    streamBuilder.append("1 0 0 1 48 700 Tm (--------------------------------------------------------------------------------) Tj\n")
+    streamBuilder.append("/F1 10 Tf\n")
+
+    var y = 678
+    for (line in bodyLines.take(33)) {
+        val safeLine = escapePdfText(line)
+        streamBuilder.append("1 0 0 1 48 $y Tm ($safeLine) Tj\n")
+        y -= 17
+    }
+    streamBuilder.append("0.30 0.35 0.42 rg\n/F1 9 Tf\n")
+    streamBuilder.append("1 0 0 1 48 52 Tm (Authorized Signatory: Office of the Principal / Head of Department, GCE Salem) Tj\n")
+    streamBuilder.append("ET")
+
+    val streamContent = streamBuilder.toString()
+    val streamBytes = streamContent.toByteArray(Charsets.ISO_8859_1)
+
+    val out = ByteArrayOutputStream()
+    fun writeAscii(str: String) {
+        out.write(str.toByteArray(Charsets.ISO_8859_1))
+    }
+
+    writeAscii("%PDF-1.4\n")
+    val offsets = IntArray(6)
+
+    offsets[1] = out.size()
+    writeAscii("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n")
+
+    offsets[2] = out.size()
+    writeAscii("2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n")
+
+    offsets[3] = out.size()
+    writeAscii("3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n")
+
+    offsets[4] = out.size()
+    writeAscii("4 0 obj\n<< /Length ${streamBytes.size} >>\nstream\n")
+    out.write(streamBytes)
+    writeAscii("\nendstream\nendobj\n")
+
+    offsets[5] = out.size()
+    writeAscii("5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n")
+
+    val xrefOffset = out.size()
+    writeAscii("xref\n0 6\n")
+    writeAscii("0000000000 65535 f \n")
+    for (i in 1..5) {
+        writeAscii(String.format(Locale.US, "%010d 00000 n \n", offsets[i]))
+    }
+    writeAscii("trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n$xrefOffset\n%%EOF\n")
+    return out.toByteArray()
+}
+
+private fun escapeXml(input: String): String {
+    return input
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("\"", "&quot;")
+        .replace("'", "&apos;")
+}
+
+private fun buildValidDocxBytes(title: String, snippet: String): ByteArray {
+    val lines = listOf(
+        "GOVERNMENT COLLEGE OF ENGINEERING, SALEM - 636 011",
+        "Autonomous Institution Affiliated to Anna University",
+        "Official Digital Notice Board Document: $title",
+        ""
+    ) + snippet.ifBlank { "Official GCE Salem Circular Document" }.lines()
+
+    val paragraphsXml = lines.joinToString("") { line ->
+        "<w:p><w:r><w:t xml:space=\"preserve\">${escapeXml(line)}</w:t></w:r></w:p>"
+    }
+
+    val contentTypesXml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>"""
+
+    val relsXml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>"""
+
+    val documentXml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>$paragraphsXml</w:body>
+</w:document>"""
+
+    val baos = ByteArrayOutputStream()
+    ZipOutputStream(baos).use { zos ->
+        fun addEntry(name: String, content: String) {
+            zos.putNextEntry(ZipEntry(name))
+            zos.write(content.toByteArray(Charsets.UTF_8))
+            zos.closeEntry()
+        }
+        addEntry("[Content_Types].xml", contentTypesXml)
+        addEntry("_rels/.rels", relsXml)
+        addEntry("word/document.xml", documentXml)
+    }
+    return baos.toByteArray()
+}
+
+private fun buildValidRtfBytes(title: String, snippet: String): ByteArray {
+    val lines = listOf(
+        "GOVERNMENT COLLEGE OF ENGINEERING, SALEM - 636 011",
+        "Autonomous Institution Affiliated to Anna University",
+        "Document: $title",
+        "------------------------------------------------------------"
+    ) + snippet.ifBlank { "Official GCE Salem Circular Document" }.lines()
+
+    val rtfBody = lines.joinToString("\\par\n") { line ->
+        line.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}")
+    }
+    val rtf = "{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0 Arial;}}\\f0\\fs22 $rtfBody}"
+    return rtf.toByteArray(Charsets.UTF_8)
+}
+
+private fun buildValidXlsxBytes(title: String, snippet: String): ByteArray {
+    val rawRows = mutableListOf(
+        listOf("GOVERNMENT COLLEGE OF ENGINEERING, SALEM - 636 011"),
+        listOf("Attachment", title),
+        emptyList()
+    )
+    snippet.ifBlank { "Sheet1: Official GCE Salem Data" }.lines().forEach { line ->
+        val cols = if (line.contains(",")) {
+            line.split(",").map { it.trim() }
+        } else if (line.contains(":")) {
+            line.split(":", limit = 2).map { it.trim() }
+        } else {
+            listOf(line.trim())
+        }
+        rawRows.add(cols)
+    }
+
+    val rowsXml = rawRows.mapIndexed { rIdx, cols ->
+        val rowNum = rIdx + 1
+        val cellsXml = cols.mapIndexed { cIdx, cellVal ->
+            val colChar = ('A' + cIdx.coerceAtMost(25))
+            "<c r=\"$colChar$rowNum\" t=\"inlineStr\"><is><t>${escapeXml(cellVal)}</t></is></c>"
+        }.joinToString("")
+        "<row r=\"$rowNum\">$cellsXml</row>"
+    }.joinToString("")
+
+    val contentTypesXml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+</Types>"""
+
+    val relsXml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>"""
+
+    val workbookXml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets><sheet name="GCE_Salem_Notice" sheetId="1" r:id="rId1"/></sheets>
+</workbook>"""
+
+    val workbookRelsXml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+</Relationships>"""
+
+    val sheetXml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>$rowsXml</sheetData>
+</worksheet>"""
+
+    val baos = ByteArrayOutputStream()
+    ZipOutputStream(baos).use { zos ->
+        fun addEntry(name: String, content: String) {
+            zos.putNextEntry(ZipEntry(name))
+            zos.write(content.toByteArray(Charsets.UTF_8))
+            zos.closeEntry()
+        }
+        addEntry("[Content_Types].xml", contentTypesXml)
+        addEntry("_rels/.rels", relsXml)
+        addEntry("xl/workbook.xml", workbookXml)
+        addEntry("xl/_rels/workbook.xml.rels", workbookRelsXml)
+        addEntry("xl/worksheets/sheet1.xml", sheetXml)
+    }
+    return baos.toByteArray()
 }
 
 fun getDownloadableBytes(context: Context, attachment: AttachmentEntity): ByteArray {
     val filename = attachment.originalFilename.ifBlank { "GCE_Salem_Circular.pdf" }
     val ext = filename.substringAfterLast('.', "pdf").lowercase()
     val localDir = File(context.filesDir, "attachments")
-    val localFile = File(localDir, attachment.storedFilename)
-    return if (localFile.exists() && localFile.isFile && localFile.length() > 0L) {
-        localFile.readBytes()
-    } else if (ext == "pdf") {
-        buildValidPdfBytes(
-            filename,
-            attachment.previewSnippet.ifBlank { "Official GCE Salem Circular Document" }
-        )
-    } else {
-        val content = "GOVERNMENT COLLEGE OF ENGINEERING, SALEM\n" +
-                "Document: $filename\n\n" +
-                attachment.previewSnippet.ifBlank { "Official GCE Salem Attachment" }
-        content.toByteArray(Charsets.UTF_8)
+    if (!localDir.exists()) localDir.mkdirs()
+    val localFile = File(localDir, attachment.storedFilename.ifBlank { filename })
+    val snippet = attachment.previewSnippet.ifBlank { "Official GCE Salem Circular Attachment" }
+
+    // 1. Image Attachments: Guarantee valid PNG/JPEG binary bytes
+    if (isImageAttachment(attachment)) {
+        if (localFile.exists() && localFile.isFile && localFile.length() > 0L) {
+            val decoded = runCatching { BitmapFactory.decodeFile(localFile.absolutePath) }.getOrNull()
+            if (decoded != null && decoded.width > 0) {
+                return localFile.readBytes()
+            }
+        }
+        val bmp = ensureValidImageBitmap(context, attachment)
+        val out = ByteArrayOutputStream()
+        val format = if (ext == "jpg" || ext == "jpeg") Bitmap.CompressFormat.JPEG else Bitmap.CompressFormat.PNG
+        bmp.compress(format, 95, out)
+        val bytes = out.toByteArray()
+        runCatching { localFile.writeBytes(bytes) }
+        return bytes
     }
+
+    // 2. PDF Attachments: Guarantee valid PDF with xref table
+    if (ext == "pdf" || attachment.fileType.equals("PDF", ignoreCase = true)) {
+        if (localFile.exists() && localFile.isFile && localFile.length() > 64L) {
+            val raw = localFile.readBytes()
+            val header = String(raw, 0, minOf(raw.size, 16), Charsets.ISO_8859_1)
+            val tail = String(raw, maxOf(0, raw.size - 256), minOf(raw.size, 256), Charsets.ISO_8859_1)
+            if (header.startsWith("%PDF-") && tail.contains("xref")) {
+                return raw
+            }
+        }
+        val pdfBytes = buildValidPdfBytes(filename, snippet)
+        runCatching { localFile.writeBytes(pdfBytes) }
+        return pdfBytes
+    }
+
+    // 3. Word (.docx) -> OpenXML ZIP archive
+    if (ext == "docx") {
+        if (localFile.exists() && localFile.isFile && localFile.length() > 4L) {
+            val raw = localFile.readBytes()
+            if (raw.size >= 4 && raw[0] == 'P'.code.toByte() && raw[1] == 'K'.code.toByte()) {
+                return raw
+            }
+        }
+        val docxBytes = buildValidDocxBytes(filename, snippet)
+        runCatching { localFile.writeBytes(docxBytes) }
+        return docxBytes
+    }
+
+    // 4. Word (.doc) -> Valid RTF / Word binary
+    if (ext == "doc" || attachment.fileType.equals("DOC", ignoreCase = true)) {
+        if (localFile.exists() && localFile.isFile && localFile.length() > 8L) {
+            val raw = localFile.readBytes()
+            val head = String(raw, 0, minOf(raw.size, 6), Charsets.ISO_8859_1)
+            if (head.startsWith("{\\rtf") || (raw[0] == 0xD0.toByte() && raw[1] == 0xCF.toByte())) {
+                return raw
+            }
+        }
+        val rtfBytes = buildValidRtfBytes(filename, snippet)
+        runCatching { localFile.writeBytes(rtfBytes) }
+        return rtfBytes
+    }
+
+    // 5. Excel (.xlsx) -> OpenXML Spreadsheet ZIP archive
+    if (ext == "xlsx") {
+        if (localFile.exists() && localFile.isFile && localFile.length() > 4L) {
+            val raw = localFile.readBytes()
+            if (raw.size >= 4 && raw[0] == 'P'.code.toByte() && raw[1] == 'K'.code.toByte()) {
+                return raw
+            }
+        }
+        val xlsxBytes = buildValidXlsxBytes(filename, snippet)
+        runCatching { localFile.writeBytes(xlsxBytes) }
+        return xlsxBytes
+    }
+
+    // 6. CSV / XLS / Other
+    if (localFile.exists() && localFile.isFile && localFile.length() > 0L) {
+        return localFile.readBytes()
+    }
+    val csvOrText = "GOVERNMENT COLLEGE OF ENGINEERING, SALEM - 636 011\n" +
+            "Document: $filename\n\n$snippet\n"
+    return csvOrText.toByteArray(Charsets.UTF_8)
 }
 
 fun getRealAttachmentSize(context: Context, attachment: AttachmentEntity): Long {
@@ -219,7 +651,7 @@ fun getRealAttachmentSize(context: Context, attachment: AttachmentEntity): Long 
     val localFile = File(localDir, attachment.storedFilename)
     if (localFile.exists() && localFile.isFile && localFile.length() > 0L) {
         val diskLen = localFile.length()
-        if (diskLen >= 4000L || attachment.fileSizeBytes <= 0L || FAKE_DEMO_SIZES.contains(attachment.fileSizeBytes)) {
+        if (diskLen > 0L && (attachment.fileSizeBytes <= 0L || FAKE_DEMO_SIZES.contains(attachment.fileSizeBytes))) {
             return diskLen
         }
     }
@@ -233,25 +665,31 @@ fun saveAttachmentToDownloads(context: Context, attachment: AttachmentEntity) {
     try {
         val filename = attachment.originalFilename.ifBlank { "GCE_Salem_Circular.pdf" }
         val ext = filename.substringAfterLast('.', "pdf").lowercase()
-        val mimeType = when (ext) {
-            "pdf" -> "application/pdf"
-            "png" -> "image/png"
-            "jpg", "jpeg" -> "image/jpeg"
-            "xls", "xlsx", "csv" -> "text/csv"
-            "doc", "docx" -> "application/msword"
+        val isImg = isImageAttachment(attachment)
+        val mimeType = when {
+            isImg && ext == "png" -> "image/png"
+            isImg && ext == "webp" -> "image/webp"
+            isImg -> "image/jpeg"
+            ext == "pdf" || attachment.fileType.equals("PDF", ignoreCase = true) -> "application/pdf"
+            ext == "docx" -> "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            ext == "doc" -> "application/msword"
+            ext == "xlsx" -> "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            ext == "xls" -> "application/vnd.ms-excel"
+            ext == "csv" -> "text/csv"
             else -> "application/octet-stream"
         }
 
         val bytesToWrite: ByteArray = getDownloadableBytes(context, attachment)
+        var savedUri: Uri? = null
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val resolver = context.contentResolver
             val values = ContentValues().apply {
                 put(MediaStore.Downloads.DISPLAY_NAME, filename)
                 put(MediaStore.Downloads.MIME_TYPE, mimeType)
                 put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
                 put(MediaStore.Downloads.IS_PENDING, 1)
             }
-            val resolver = context.contentResolver
             val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
             if (uri != null) {
                 resolver.openOutputStream(uri)?.use { out ->
@@ -261,11 +699,45 @@ fun saveAttachmentToDownloads(context: Context, attachment: AttachmentEntity) {
                 values.clear()
                 values.put(MediaStore.Downloads.IS_PENDING, 0)
                 resolver.update(uri, values, null, null)
+                savedUri = uri
+            }
+
+            // If it's an image, also index it in MediaStore.Images so Gallery/Photos shows it immediately
+            if (isImg) {
+                runCatching {
+                    val imgValues = ContentValues().apply {
+                        put(MediaStore.Images.Media.DISPLAY_NAME, filename)
+                        put(MediaStore.Images.Media.MIME_TYPE, mimeType)
+                        put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/GCE_Salem_Notices")
+                        put(MediaStore.Images.Media.IS_PENDING, 1)
+                    }
+                    val imgUri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, imgValues)
+                    if (imgUri != null) {
+                        resolver.openOutputStream(imgUri)?.use { out ->
+                            out.write(bytesToWrite)
+                            out.flush()
+                        }
+                        imgValues.clear()
+                        imgValues.put(MediaStore.Images.Media.IS_PENDING, 0)
+                        resolver.update(imgUri, imgValues, null, null)
+                        if (savedUri == null) savedUri = imgUri
+                    }
+                }
+            }
+
+            if (savedUri != null) {
                 Toast.makeText(
                     context,
-                    "Downloaded '$filename' to Downloads folder (${formatFileSize(bytesToWrite.size.toLong())})",
+                    "Downloaded '$filename' (${formatFileSize(bytesToWrite.size.toLong())})",
                     Toast.LENGTH_LONG
                 ).show()
+                runCatching {
+                    val viewIntent = Intent(Intent.ACTION_VIEW).apply {
+                        setDataAndType(savedUri, mimeType)
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    context.startActivity(viewIntent)
+                }
                 return
             }
         }
@@ -277,7 +749,7 @@ fun saveAttachmentToDownloads(context: Context, attachment: AttachmentEntity) {
         FileOutputStream(outFile).use { it.write(bytesToWrite) }
         Toast.makeText(
             context,
-            "Downloaded '$filename' (${outFile.absolutePath})",
+            "Downloaded '$filename' (${formatFileSize(bytesToWrite.size.toLong())})",
             Toast.LENGTH_LONG
         ).show()
     } catch (e: Exception) {
@@ -875,44 +1347,147 @@ fun NoticeDetailDialog(
     }
 }
 
+private fun extractOpenXmlText(file: File, fallback: String): String {
+    if (!file.exists() || file.length() < 4L) return fallback
+    return runCatching {
+        val raw = file.readBytes()
+        if (raw.size < 4 || raw[0] != 'P'.code.toByte() || raw[1] != 'K'.code.toByte()) {
+            val str = String(raw, Charsets.UTF_8)
+            return@runCatching if (str.none { it == '\u0000' }) str.take(2500) else fallback
+        }
+        val entries = mutableMapOf<String, String>()
+        ZipInputStream(ByteArrayInputStream(raw)).use { zis ->
+            var entry = zis.nextEntry
+            while (entry != null) {
+                if (entry.name.endsWith(".xml")) {
+                    entries[entry.name] = zis.readBytes().toString(Charsets.UTF_8)
+                }
+                zis.closeEntry()
+                entry = zis.nextEntry
+            }
+        }
+        val docXml = entries["word/document.xml"]
+        if (docXml != null) {
+            val paragraphs = Regex("<w:p[^>]*>(.*?)</w:p>", RegexOption.DOT_MATCHES_ALL)
+                .findAll(docXml)
+                .map { pMatch ->
+                    Regex("<w:t[^>]*>(.*?)</w:t>", RegexOption.DOT_MATCHES_ALL)
+                        .findAll(pMatch.groupValues[1])
+                        .joinToString("") { it.groupValues[1] }
+                }
+                .filter { it.isNotBlank() }
+                .toList()
+            if (paragraphs.isNotEmpty()) {
+                return@runCatching paragraphs.joinToString("\n")
+            }
+        }
+        val sheetXml = entries["xl/worksheets/sheet1.xml"]
+        if (sheetXml != null) {
+            val sharedStrings = mutableListOf<String>()
+            entries["xl/sharedStrings.xml"]?.let { ssXml ->
+                Regex("<si[^>]*>(.*?)</si>", RegexOption.DOT_MATCHES_ALL).findAll(ssXml).forEach { si ->
+                    val text = Regex("<t[^>]*>(.*?)</t>", RegexOption.DOT_MATCHES_ALL)
+                        .findAll(si.groupValues[1])
+                        .joinToString("") { it.groupValues[1] }
+                    sharedStrings.add(text)
+                }
+            }
+            val rows = Regex("<row[^>]*>(.*?)</row>", RegexOption.DOT_MATCHES_ALL)
+                .findAll(sheetXml)
+                .map { rMatch ->
+                    Regex("<c([^>]*)>(.*?)</c>", RegexOption.DOT_MATCHES_ALL)
+                        .findAll(rMatch.groupValues[1])
+                        .map { cMatch ->
+                            val attrs = cMatch.groupValues[1]
+                            val inner = cMatch.groupValues[2]
+                            val inlineText = Regex("<t[^>]*>(.*?)</t>", RegexOption.DOT_MATCHES_ALL)
+                                .find(inner)?.groupValues?.get(1)
+                            if (inlineText != null) {
+                                inlineText
+                            } else {
+                                val vVal = Regex("<v>(.*?)</v>").find(inner)?.groupValues?.get(1) ?: ""
+                                if (attrs.contains("t=\"s\"")) {
+                                    val idx = vVal.toIntOrNull() ?: -1
+                                    sharedStrings.getOrElse(idx) { vVal }
+                                } else {
+                                    vVal
+                                }
+                            }
+                        }
+                        .filter { it.isNotBlank() }
+                        .joinToString(" | ")
+                }
+                .filter { it.isNotBlank() }
+                .toList()
+            if (rows.isNotEmpty()) {
+                return@runCatching rows.joinToString("\n")
+            }
+        }
+        fallback
+    }.getOrDefault(fallback)
+}
+
 @Composable
 fun AttachmentPreviewDialog(
     att: AttachmentEntity,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
-    val localFile = remember(att.storedFilename) {
-        File(File(context.filesDir, "attachments"), att.storedFilename)
+    val filename = att.originalFilename.ifBlank { "GCE_Salem_Circular.pdf" }
+    val ext = filename.substringAfterLast('.', "pdf").lowercase()
+    val isImg = isImageAttachment(att)
+    val isSpreadsheet = ext in setOf("xlsx", "xls", "csv") || att.fileType.equals("XLS", ignoreCase = true)
+    var zoomScale by remember { mutableStateOf(1f) }
+
+    val localFile = remember(att.storedFilename, filename) {
+        val dir = File(context.filesDir, "attachments")
+        if (!dir.exists()) dir.mkdirs()
+        File(dir, att.storedFilename.ifBlank { filename })
     }
 
-    val imageBitmap: Bitmap? = remember(att.storedFilename, localFile.exists(), localFile.length()) {
-        if (att.fileType == "IMAGE" && localFile.exists() && localFile.length() > 0L) {
-            runCatching { BitmapFactory.decodeFile(localFile.absolutePath) }.getOrNull()
+    val imageBitmap: Bitmap? = remember(att.id, att.storedFilename, isImg) {
+        if (isImg) {
+            runCatching { ensureValidImageBitmap(context, att) }.getOrNull()
         } else null
     }
 
-    val pdfBitmap: Bitmap? = remember(att.storedFilename, localFile.exists(), localFile.length()) {
-        if (att.fileType == "PDF") {
+    val textPreviewContent: String = remember(att.id, att.storedFilename, localFile.exists(), localFile.length()) {
+        if (!isImg) {
+            val baseSnippet = att.previewSnippet.ifBlank {
+                "Government College of Engineering, Salem (Autonomous)\nOfficial Circular Reference: GCE/OFFICE/NOTICES/2026\nAuthorized Signatory: Head of Department & Principal"
+            }
+            extractOpenXmlText(localFile, baseSnippet)
+        } else {
+            att.previewSnippet
+        }
+    }
+
+    // Render visual A4 document page preview via PdfRenderer for PDFs and Documents
+    val documentPageBitmap: Bitmap? = remember(att.id, att.storedFilename, textPreviewContent, isImg) {
+        if (!isImg) {
             runCatching {
-                val targetPdf = if (localFile.exists() && localFile.length() > 10L) {
-                    localFile
+                val validPdfBytes = if ((ext == "pdf" || att.fileType.equals("PDF", ignoreCase = true)) &&
+                    localFile.exists() && localFile.length() > 64L
+                ) {
+                    val raw = localFile.readBytes()
+                    val head = String(raw, 0, minOf(raw.size, 12), Charsets.ISO_8859_1)
+                    val tail = String(raw, maxOf(0, raw.size - 256), minOf(raw.size, 256), Charsets.ISO_8859_1)
+                    if (head.startsWith("%PDF-") && tail.contains("xref")) raw
+                    else buildValidPdfBytes(filename, textPreviewContent)
                 } else {
-                    val fallbackPdf = File(context.cacheDir, "preview_${att.id}_${att.storedFilename.ifBlank { "doc.pdf" }}")
-                    fallbackPdf.writeBytes(
-                        buildValidPdfBytes(
-                            att.originalFilename.ifBlank { "GCE_Salem_Circular.pdf" },
-                            att.previewSnippet.ifBlank { "Official GCE Salem Circular Document" }
-                        )
-                    )
-                    fallbackPdf
+                    buildValidPdfBytes(filename, textPreviewContent)
                 }
-                ParcelFileDescriptor.open(targetPdf, ParcelFileDescriptor.MODE_READ_ONLY)?.use { pfd ->
+
+                val previewPdfFile = File(context.cacheDir, "preview_page_${att.id}.pdf")
+                previewPdfFile.writeBytes(validPdfBytes)
+
+                ParcelFileDescriptor.open(previewPdfFile, ParcelFileDescriptor.MODE_READ_ONLY)?.use { pfd ->
                     PdfRenderer(pfd).use { renderer ->
                         if (renderer.pageCount > 0) {
                             renderer.openPage(0).use { page ->
                                 val bmp = Bitmap.createBitmap(
-                                    page.width.coerceAtLeast(400),
-                                    page.height.coerceAtLeast(560),
+                                    (page.width * 2).coerceAtLeast(800),
+                                    (page.height * 2).coerceAtLeast(1120),
                                     Bitmap.Config.ARGB_8888
                                 )
                                 bmp.eraseColor(android.graphics.Color.WHITE)
@@ -926,28 +1501,44 @@ fun AttachmentPreviewDialog(
         } else null
     }
 
-    val textPreviewContent: String = remember(att.storedFilename, localFile.exists(), localFile.length()) {
-        if (att.fileType != "IMAGE" && att.fileType != "PDF" && localFile.exists() && localFile.length() in 1..65536) {
-            runCatching {
-                val raw = localFile.readText(Charsets.UTF_8)
-                if (raw.none { it == '\u0000' }) raw.take(1500) else att.previewSnippet
-            }.getOrDefault(att.previewSnippet)
-        } else {
-            att.previewSnippet
-        }
-    }
-
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector = if (att.fileType == "IMAGE") Icons.Default.Image else Icons.Default.Description,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(text = "Attachment Preview", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                    Icon(
+                        imageVector = when {
+                            isImg -> Icons.Default.Image
+                            isSpreadsheet -> Icons.Default.TableChart
+                            else -> Icons.Default.Description
+                        },
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(text = "Attachment Preview", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    listOf(1f to "1x", 1.5f to "1.5x", 2f to "2x").forEach { (scale, label) ->
+                        Surface(
+                            color = if (zoomScale == scale) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                            shape = RoundedCornerShape(6.dp),
+                            modifier = Modifier.clickable { zoomScale = scale }
+                        ) {
+                            Text(
+                                text = label,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (zoomScale == scale) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                            )
+                        }
+                    }
+                }
             }
         },
         text = {
@@ -957,77 +1548,111 @@ fun AttachmentPreviewDialog(
                     .verticalScroll(rememberScrollState())
             ) {
                 Text(
-                    text = att.originalFilename,
+                    text = filename,
                     fontWeight = FontWeight.SemiBold,
                     fontSize = 14.sp
                 )
                 Text(
-                    text = "Format: ${att.fileType} • Size: ${formatFileSize(getRealAttachmentSize(context, att))}",
+                    text = "Format: ${att.fileType.ifBlank { ext.uppercase() }} • Size: ${formatFileSize(getRealAttachmentSize(context, att))}",
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(10.dp))
 
-                when {
-                    att.fileType == "IMAGE" && imageBitmap != null -> {
+                if (isImg && imageBitmap != null) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Color(0xFF0F172A))
+                            .horizontalScroll(rememberScrollState())
+                            .padding(6.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
                         Image(
                             bitmap = imageBitmap.asImageBitmap(),
-                            contentDescription = att.originalFilename,
+                            contentDescription = filename,
                             contentScale = ContentScale.Fit,
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .height(240.dp)
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(Color(0xFF0F172A))
+                                .width((280 * zoomScale).dp)
+                                .height((220 * zoomScale).dp)
+                                .clip(RoundedCornerShape(6.dp))
                         )
                     }
-                    att.fileType == "IMAGE" -> {
-                        Surface(
-                            color = MaterialTheme.colorScheme.surfaceVariant,
-                            shape = RoundedCornerShape(8.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                modifier = Modifier.padding(20.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Image,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(36.dp)
-                                )
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Text(
-                                    text = att.originalFilename,
-                                    fontWeight = FontWeight.SemiBold,
-                                    fontSize = 13.sp
-                                )
-                                Text(
-                                    text = "Syncing image attachment from cloud storage...",
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    fontSize = 11.sp
-                                )
-                            }
-                        }
-                    }
-                    att.fileType == "PDF" && pdfBitmap != null -> {
+                } else {
+                    if (documentPageBitmap != null) {
                         Surface(
                             shape = RoundedCornerShape(8.dp),
                             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Image(
-                                bitmap = pdfBitmap.asImageBitmap(),
-                                contentDescription = "PDF Page Preview",
-                                contentScale = ContentScale.FillWidth,
+                            Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .background(Color.White)
-                            )
+                                    .horizontalScroll(rememberScrollState()),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Image(
+                                    bitmap = documentPageBitmap.asImageBitmap(),
+                                    contentDescription = "Document Page Preview",
+                                    contentScale = ContentScale.FillWidth,
+                                    modifier = Modifier
+                                        .width((280 * zoomScale).dp)
+                                        .background(Color.White)
+                                )
+                            }
                         }
+                        Spacer(modifier = Modifier.height(10.dp))
                     }
-                    else -> {
+
+                    if (isSpreadsheet) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.surface,
+                            shape = RoundedCornerShape(8.dp),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(10.dp)) {
+                                Text(
+                                    text = "SPREADSHEET DATA VIEW (${filename.take(28)})",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                textPreviewContent.lines().filter { it.isNotBlank() }.forEachIndexed { idx, rowLine ->
+                                    Surface(
+                                        color = if (idx == 0) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+                                        else if (idx % 2 == 0) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                                        else Color.Transparent,
+                                        shape = RoundedCornerShape(4.dp),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(vertical = 2.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                text = "${idx + 1}",
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.width(22.dp)
+                                            )
+                                            Text(
+                                                text = rowLine,
+                                                fontSize = 11.sp,
+                                                fontWeight = if (idx == 0) FontWeight.Bold else FontWeight.Normal
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
                         Surface(
                             color = MaterialTheme.colorScheme.surfaceVariant,
                             shape = RoundedCornerShape(8.dp),
@@ -1035,16 +1660,14 @@ fun AttachmentPreviewDialog(
                         ) {
                             Column(modifier = Modifier.padding(12.dp)) {
                                 Text(
-                                    text = "DOCUMENT CONTENT PREVIEW:",
+                                    text = "DOCUMENT CONTENT SUMMARY:",
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 11.sp,
                                     color = MaterialTheme.colorScheme.primary
                                 )
                                 Spacer(modifier = Modifier.height(6.dp))
                                 Text(
-                                    text = textPreviewContent.ifEmpty {
-                                        "Government College of Engineering, Salem (Autonomous)\nOfficial Circular Reference: GCE/OFFICE/NOTICES/2026\nAuthorized signatory: Head of Department & Principal"
-                                    },
+                                    text = textPreviewContent,
                                     fontSize = 12.sp,
                                     lineHeight = 18.sp
                                 )
@@ -1067,7 +1690,7 @@ fun AttachmentPreviewDialog(
                     modifier = Modifier.size(16.dp)
                 )
                 Spacer(modifier = Modifier.width(6.dp))
-                Text("Download File")
+                Text("Download & Open")
             }
         },
         dismissButton = {
