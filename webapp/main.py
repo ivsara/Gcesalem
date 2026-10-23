@@ -20,16 +20,32 @@ ROOT = Path(__file__).resolve().parent
 UPLOAD_DIR = ROOT / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 MAX_FILE_SIZE = 10 * 1024 * 1024
-ALLOWED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".doc", ".docx", ".xls", ".xlsx"}
+ALLOWED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".webp", ".doc", ".docx", ".xls", ".xlsx", ".csv", ".txt"}
 ALLOWED_ROLES = {"Administrator", "HOD", "Faculty", "Student"}
 
 def valid_file_signature(ext: str, data: bytes) -> bool:
-    """Basic signature checks in addition to extension and size validation."""
-    if ext == ".pdf": return data.startswith(b"%PDF-")
-    if ext in {".jpg", ".jpeg"}: return data.startswith(b"\xff\xd8\xff")
-    if ext == ".png": return data.startswith(b"\x89PNG\r\n\x1a\n")
-    if ext in {".doc", ".xls"}: return data.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1")
-    if ext in {".docx", ".xlsx"}: return data.startswith(b"PK\x03\x04")
+    """Validate uploaded attachment signature while supporting modern PDF, RTF/OpenXML, CSV/TXT, and WebP formats."""
+    if not data:
+        return False
+    if ext == ".pdf":
+        return b"%PDF-" in data[:1024]
+    if ext in {".jpg", ".jpeg"}:
+        return data.startswith(b"\xff\xd8\xff")
+    if ext == ".png":
+        return data.startswith(b"\x89PNG\r\n\x1a\n")
+    if ext == ".webp":
+        return data.startswith(b"RIFF") and b"WEBP" in data[:16]
+    if ext in {".doc", ".xls"}:
+        return (
+            data.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1")
+            or data.startswith(b"{\\rtf")
+            or data.startswith(b"PK\x03\x04")
+            or b"\x00" not in data[:512]
+        )
+    if ext in {".docx", ".xlsx"}:
+        return data.startswith(b"PK\x03\x04")
+    if ext in {".csv", ".txt"}:
+        return len(data) > 0
     return False
 SECRET_KEY = os.getenv("SECRET_KEY", "dev-only-change-this-secret-before-deployment")
 if os.getenv("APP_ENV", "development").lower() == "production" and SECRET_KEY == "dev-only-change-this-secret-before-deployment":

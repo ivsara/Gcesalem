@@ -84,6 +84,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -112,6 +113,7 @@ import com.example.data.model.NoticePriority
 import com.example.data.model.NoticeVisibility
 import com.example.data.model.UserEntity
 import com.example.data.model.UserRole
+import com.example.data.remote.CloudNoticeSync
 import com.example.ui.theme.CatCircularColor
 import com.example.ui.theme.CatEventColor
 import com.example.ui.theme.CatExamColor
@@ -321,14 +323,7 @@ fun ensureValidImageBitmap(context: Context, attachment: AttachmentEntity): Bitm
     paint.typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
     canvas.drawText("OFFICIAL DIGITAL NOTICE BOARD — GCE SALEM (636 011)", 72f, (height - 64).toFloat(), paint)
 
-    // Persist generated bitmap so future previews and downloads read valid image bytes
-    runCatching {
-        val ext = cleanFile.substringAfterLast('.', "png").lowercase()
-        val fmt = if (ext == "jpg" || ext == "jpeg") Bitmap.CompressFormat.JPEG else Bitmap.CompressFormat.PNG
-        FileOutputStream(storedFile).use { out ->
-            bmp.compress(fmt, 95, out)
-        }
-    }
+    // Return fallback bitmap in memory without overwriting storedFile so cloud hydration can still write the real uploaded image
     return bmp
 }
 
@@ -563,83 +558,74 @@ fun getDownloadableBytes(context: Context, attachment: AttachmentEntity): ByteAr
     val localDir = File(context.filesDir, "attachments")
     if (!localDir.exists()) localDir.mkdirs()
     val localFile = File(localDir, attachment.storedFilename.ifBlank { filename })
+    val origFile = File(localDir, filename)
+    val existingFile = listOf(localFile, origFile).firstOrNull { it.exists() && it.isFile && it.length() > 0L }
     val snippet = attachment.previewSnippet.ifBlank { "Official GCE Salem Circular Attachment" }
 
-    // 1. Image Attachments: Guarantee valid PNG/JPEG binary bytes
+    // 1. Image Attachments: Return authentic image bytes if present on disk, otherwise render fallback in memory
     if (isImageAttachment(attachment)) {
-        if (localFile.exists() && localFile.isFile && localFile.length() > 0L) {
-            val decoded = runCatching { BitmapFactory.decodeFile(localFile.absolutePath) }.getOrNull()
+        if (existingFile != null) {
+            val decoded = runCatching { BitmapFactory.decodeFile(existingFile.absolutePath) }.getOrNull()
             if (decoded != null && decoded.width > 0) {
-                return localFile.readBytes()
+                return existingFile.readBytes()
             }
         }
         val bmp = ensureValidImageBitmap(context, attachment)
         val out = ByteArrayOutputStream()
         val format = if (ext == "jpg" || ext == "jpeg") Bitmap.CompressFormat.JPEG else Bitmap.CompressFormat.PNG
         bmp.compress(format, 95, out)
-        val bytes = out.toByteArray()
-        runCatching { localFile.writeBytes(bytes) }
-        return bytes
+        return out.toByteArray()
     }
 
-    // 2. PDF Attachments: Guarantee valid PDF with xref table
+    // 2. PDF Attachments: Support all PDF versions (including PDF 1.5+ cross-reference streams)
     if (ext == "pdf" || attachment.fileType.equals("PDF", ignoreCase = true)) {
-        if (localFile.exists() && localFile.isFile && localFile.length() > 64L) {
-            val raw = localFile.readBytes()
-            val header = String(raw, 0, minOf(raw.size, 16), Charsets.ISO_8859_1)
-            val tail = String(raw, maxOf(0, raw.size - 256), minOf(raw.size, 256), Charsets.ISO_8859_1)
-            if (header.startsWith("%PDF-") && tail.contains("xref")) {
+        if (existingFile != null && existingFile.length() > 64L) {
+            val raw = existingFile.readBytes()
+            val header = String(raw, 0, minOf(raw.size, 1024), Charsets.ISO_8859_1)
+            if (header.contains("%PDF-")) {
                 return raw
             }
         }
-        val pdfBytes = buildValidPdfBytes(filename, snippet)
-        runCatching { localFile.writeBytes(pdfBytes) }
-        return pdfBytes
+        return buildValidPdfBytes(filename, snippet)
     }
 
     // 3. Word (.docx) -> OpenXML ZIP archive
     if (ext == "docx") {
-        if (localFile.exists() && localFile.isFile && localFile.length() > 4L) {
-            val raw = localFile.readBytes()
+        if (existingFile != null && existingFile.length() > 4L) {
+            val raw = existingFile.readBytes()
             if (raw.size >= 4 && raw[0] == 'P'.code.toByte() && raw[1] == 'K'.code.toByte()) {
                 return raw
             }
         }
-        val docxBytes = buildValidDocxBytes(filename, snippet)
-        runCatching { localFile.writeBytes(docxBytes) }
-        return docxBytes
+        return buildValidDocxBytes(filename, snippet)
     }
 
     // 4. Word (.doc) -> Valid RTF / Word binary
     if (ext == "doc" || attachment.fileType.equals("DOC", ignoreCase = true)) {
-        if (localFile.exists() && localFile.isFile && localFile.length() > 8L) {
-            val raw = localFile.readBytes()
+        if (existingFile != null && existingFile.length() > 8L) {
+            val raw = existingFile.readBytes()
             val head = String(raw, 0, minOf(raw.size, 6), Charsets.ISO_8859_1)
             if (head.startsWith("{\\rtf") || (raw[0] == 0xD0.toByte() && raw[1] == 0xCF.toByte())) {
                 return raw
             }
         }
-        val rtfBytes = buildValidRtfBytes(filename, snippet)
-        runCatching { localFile.writeBytes(rtfBytes) }
-        return rtfBytes
+        return buildValidRtfBytes(filename, snippet)
     }
 
     // 5. Excel (.xlsx) -> OpenXML Spreadsheet ZIP archive
     if (ext == "xlsx") {
-        if (localFile.exists() && localFile.isFile && localFile.length() > 4L) {
-            val raw = localFile.readBytes()
+        if (existingFile != null && existingFile.length() > 4L) {
+            val raw = existingFile.readBytes()
             if (raw.size >= 4 && raw[0] == 'P'.code.toByte() && raw[1] == 'K'.code.toByte()) {
                 return raw
             }
         }
-        val xlsxBytes = buildValidXlsxBytes(filename, snippet)
-        runCatching { localFile.writeBytes(xlsxBytes) }
-        return xlsxBytes
+        return buildValidXlsxBytes(filename, snippet)
     }
 
-    // 6. CSV / XLS / Other
-    if (localFile.exists() && localFile.isFile && localFile.length() > 0L) {
-        return localFile.readBytes()
+    // 6. CSV / XLS / TXT / Other
+    if (existingFile != null) {
+        return existingFile.readBytes()
     }
     val csvOrText = "GOVERNMENT COLLEGE OF ENGINEERING, SALEM - 636 011\n" +
             "Document: $filename\n\n$snippet\n"
@@ -648,7 +634,7 @@ fun getDownloadableBytes(context: Context, attachment: AttachmentEntity): ByteAr
 
 fun getRealAttachmentSize(context: Context, attachment: AttachmentEntity): Long {
     val localDir = File(context.filesDir, "attachments")
-    val localFile = File(localDir, attachment.storedFilename)
+    val localFile = File(localDir, attachment.storedFilename.ifBlank { attachment.originalFilename })
     if (localFile.exists() && localFile.isFile && localFile.length() > 0L) {
         val diskLen = localFile.length()
         if (diskLen > 0L && (attachment.fileSizeBytes <= 0L || FAKE_DEMO_SIZES.contains(attachment.fileSizeBytes))) {
@@ -658,7 +644,10 @@ fun getRealAttachmentSize(context: Context, attachment: AttachmentEntity): Long 
     if (attachment.fileSizeBytes > 0L && !FAKE_DEMO_SIZES.contains(attachment.fileSizeBytes)) {
         return attachment.fileSizeBytes
     }
-    return getDownloadableBytes(context, attachment).size.toLong()
+    if (localFile.exists() && localFile.isFile && localFile.length() > 0L) {
+        return localFile.length()
+    }
+    return 24576L
 }
 
 fun saveAttachmentToDownloads(context: Context, attachment: AttachmentEntity) {
@@ -1438,6 +1427,7 @@ fun AttachmentPreviewDialog(
     val isImg = isImageAttachment(att)
     val isSpreadsheet = ext in setOf("xlsx", "xls", "csv") || att.fileType.equals("XLS", ignoreCase = true)
     var zoomScale by remember { mutableStateOf(1f) }
+    var hydrationTick by remember { mutableStateOf(0) }
 
     val localFile = remember(att.storedFilename, filename) {
         val dir = File(context.filesDir, "attachments")
@@ -1445,13 +1435,21 @@ fun AttachmentPreviewDialog(
         File(dir, att.storedFilename.ifBlank { filename })
     }
 
-    val imageBitmap: Bitmap? = remember(att.id, att.storedFilename, isImg) {
+    LaunchedEffect(att.id, att.storedFilename) {
+        if (!localFile.exists() || localFile.length() < 4096L) {
+            if (CloudNoticeSync.ensureAttachmentHydrated(att)) {
+                hydrationTick++
+            }
+        }
+    }
+
+    val imageBitmap: Bitmap? = remember(att.id, att.storedFilename, isImg, hydrationTick) {
         if (isImg) {
             runCatching { ensureValidImageBitmap(context, att) }.getOrNull()
         } else null
     }
 
-    val textPreviewContent: String = remember(att.id, att.storedFilename, localFile.exists(), localFile.length()) {
+    val textPreviewContent: String = remember(att.id, att.storedFilename, localFile.exists(), localFile.length(), hydrationTick) {
         if (!isImg) {
             val baseSnippet = att.previewSnippet.ifBlank {
                 "Government College of Engineering, Salem (Autonomous)\nOfficial Circular Reference: GCE/OFFICE/NOTICES/2026\nAuthorized Signatory: Head of Department & Principal"
@@ -1463,16 +1461,15 @@ fun AttachmentPreviewDialog(
     }
 
     // Render visual A4 document page preview via PdfRenderer for PDFs and Documents
-    val documentPageBitmap: Bitmap? = remember(att.id, att.storedFilename, textPreviewContent, isImg) {
+    val documentPageBitmap: Bitmap? = remember(att.id, att.storedFilename, textPreviewContent, isImg, hydrationTick) {
         if (!isImg) {
             runCatching {
                 val validPdfBytes = if ((ext == "pdf" || att.fileType.equals("PDF", ignoreCase = true)) &&
                     localFile.exists() && localFile.length() > 64L
                 ) {
                     val raw = localFile.readBytes()
-                    val head = String(raw, 0, minOf(raw.size, 12), Charsets.ISO_8859_1)
-                    val tail = String(raw, maxOf(0, raw.size - 256), minOf(raw.size, 256), Charsets.ISO_8859_1)
-                    if (head.startsWith("%PDF-") && tail.contains("xref")) raw
+                    val head = String(raw, 0, minOf(raw.size, 1024), Charsets.ISO_8859_1)
+                    if (head.contains("%PDF-")) raw
                     else buildValidPdfBytes(filename, textPreviewContent)
                 } else {
                     buildValidPdfBytes(filename, textPreviewContent)
@@ -1977,6 +1974,12 @@ fun NoticeFormDialog(
                                 "DOC", "DOCX" -> "DOC"
                                 else -> "PDF"
                             }
+                            val defaultSnippet = "Uploaded document '$displayName' (${formatFileSize(fileSize)}) by ${currentUser.fullName}."
+                            val extractedSnippet = if (normalizedType != "IMAGE") {
+                                extractOpenXmlText(destFile, defaultSnippet).take(1200)
+                            } else {
+                                defaultSnippet
+                            }
                             attachments.add(
                                 AttachmentEntity(
                                     noticeId = 0,
@@ -1985,7 +1988,7 @@ fun NoticeFormDialog(
                                     fileType = normalizedType,
                                     fileSizeBytes = fileSize,
                                     uploadedBy = currentUser.loginId,
-                                    previewSnippet = "Uploaded document '$displayName' (${formatFileSize(fileSize)}) by ${currentUser.fullName}."
+                                    previewSnippet = extractedSnippet
                                 )
                             )
                             Toast.makeText(context, "Attached: $displayName (${formatFileSize(fileSize)})", Toast.LENGTH_SHORT).show()
